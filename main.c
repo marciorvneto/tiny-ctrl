@@ -128,26 +128,40 @@ typedef struct {
 
 //============================== 
 //
-//    Parsing
+//    Tokenization
 //
 //============================== 
 
-typedef struct {
-	const char   *source;
-	size_t       size;
-	size_t       offset;
-} Tokenizer;
+// X-Macros for defining token types.
+// I wanted more granular control over how those
+// tokens were printed, so instead of defining
+// a single X macro, I added a V macro for tokens
+// that carry value information
+
+#define TOK_TYPE_LIST \
+	V(TOK_KEYWORD) \
+	V(TOK_ID) \
+	V(TOK_NUMBER) \
+	X(TOK_LPAREN) \
+	X(TOK_RPAREN) \
+	X(TOK_LBRACKET) \
+	X(TOK_RBRACKET) \
+	X(TOK_COMMA) \
+	X(TOK_EQ) \
+	V(TOK_PLUS) \
+	V(TOK_MINUS) \
+	V(TOK_MUL) \
+	V(TOK_DIV) \
+	V(TOK_POW) \
+	V(TOK_AT) \
+	X(TOK_TYPE_COUNT)
 
 typedef enum {
-	TOK_KEYWORD,
-	TOK_ID,
-	TOK_NUMBER,
-	TOK_LPAREN,
-	TOK_RPAREN,
-	TOK_LBRACKET,
-	TOK_RBRACKET,
-	TOK_COMMA,
-	TOK_EQ,
+#define X(name) name,
+#define V(name) name,
+	TOK_TYPE_LIST
+#undef X
+#undef V
 } TokenType;
 
 typedef struct {
@@ -155,18 +169,26 @@ typedef struct {
 	char      *value;
 } Token;
 
+void token_type_repr(TokenType type, char *buf){
+	int repr_size = 0;
+	switch(type){
+#define X(name) case name: { repr_size = sprintf(buf, #name); break;}
+#define V(name) case name: { repr_size = sprintf(buf, #name); break;}
+		TOK_TYPE_LIST
+#undef X
+#undef V
+	}
+	buf[repr_size] = '\0';
+}
+
 void token_repr(Token *tok, char *buf){
 	int repr_size = 0;
 	switch(tok->type){
-		case TOK_KEYWORD:  { repr_size = sprintf(buf, "TOK_KEYWORD [%s]", tok->value); break;}
-		case TOK_ID:       { repr_size = sprintf(buf, "TOK_ID      [%s]", tok->value); break;}
-		case TOK_NUMBER:   { repr_size = sprintf(buf, "TOK_NUMBER  [%s]", tok->value); break;}
-		case TOK_LPAREN:   { repr_size = sprintf(buf, "TOK_LPAREN"); break;}
-		case TOK_RPAREN:   { repr_size = sprintf(buf, "TOK_RPAREN"); break;}
-		case TOK_LBRACKET: { repr_size = sprintf(buf, "TOK_LBRACKET"); break;}
-		case TOK_RBRACKET: { repr_size = sprintf(buf, "TOK_RBRACKET"); break;}
-		case TOK_COMMA:    { repr_size = sprintf(buf, "TOK_COMMA"); break;}
-		case TOK_EQ:       { repr_size = sprintf(buf, "TOK_EQ"); break;}
+#define X(name) case name: { repr_size = sprintf(buf, #name); break;}
+#define V(name) case name: { repr_size = sprintf(buf, "%-15s [%s]", #name, tok->value); break;}
+		TOK_TYPE_LIST
+#undef X
+#undef V
 	}
 	buf[repr_size] = '\0';
 }
@@ -176,6 +198,13 @@ void token_print(Token *tok){
 	token_repr(tok, buf);
 	printf("%s\n", buf);
 }
+
+typedef struct {
+	const char   *source;
+	size_t       size;
+	size_t       offset;
+} Tokenizer;
+
 
 size_t tokenizer_is_id(const char *pos){
 	if(!isalpha(pos[0])) return 0;
@@ -187,7 +216,6 @@ size_t tokenizer_is_id(const char *pos){
 }
 
 size_t tokenizer_is_number(const char *pos){
-	int scientific = 0;
 	if(!isdigit(pos[0])) return 0;
 	size_t i = 1;
 	while(isdigit(pos[i])){
@@ -209,6 +237,21 @@ int tokenizer_is_symbol(const char *pos, const char *symbol){
 	return 0;
 }
 
+int tokenizer_is_str(const char *pos, const char *str, size_t n){
+	if(strncmp(pos, str, n) == 0) return 1;
+	return 0;
+}
+
+Token tokenizer_make_symbol(Arena *a, TokenType type, Tokenizer *tokenizer){
+	Token tok = {
+		tok.type  = type,
+		tok.value = NULL,
+	};
+	size_t num_chars = 1;
+	tokenizer->offset += num_chars;
+	return tok;
+}
+
 
 int tokenize_line(Arena *a, const char *line, size_t n, Token *tokens , size_t *num_tokens){
 	Tokenizer tokenizer;
@@ -217,7 +260,7 @@ int tokenize_line(Arena *a, const char *line, size_t n, Token *tokens , size_t *
 	tokenizer.size   = n;
 
 	*num_tokens      = 0;
-	printf("Tokenizing: %s\n", line);
+	// printf("Tokenizing: %s\n", line);
 
 	while(tokenizer.offset < tokenizer.size){
 		const char *pos = tokenizer.source + tokenizer.offset;
@@ -229,8 +272,8 @@ int tokenize_line(Arena *a, const char *line, size_t n, Token *tokens , size_t *
 
 		// Check for keywords
 		if(
-				(strncmp(pos, "let", 3) == 0)
-				// && !isalpha(*(pos + 3))
+				tokenizer_is_str(pos, "let", 3)
+				&& !isalpha(*(pos + 3))
 			)
 		{
 			char *value = arena_alloc(a, 3 + 1);
@@ -243,7 +286,7 @@ int tokenize_line(Arena *a, const char *line, size_t n, Token *tokens , size_t *
 			tokens[*num_tokens] = tok;
 			(*num_tokens)++;
 			tokenizer.offset += 3;
-			token_print(&tok);
+			// token_print(&tok);
 			continue;
 
 		}
@@ -261,10 +304,10 @@ int tokenize_line(Arena *a, const char *line, size_t n, Token *tokens , size_t *
 			tokens[*num_tokens] = tok;
 			(*num_tokens)++;
 			tokenizer.offset += id_size;
-			token_print(&tok);
+			// token_print(&tok);
 			continue;
 		}
-		//
+
 		// Check for identifiers
 		int num_size = tokenizer_is_number(pos);
 		if(num_size > 0){
@@ -278,70 +321,65 @@ int tokenize_line(Arena *a, const char *line, size_t n, Token *tokens , size_t *
 			tokens[*num_tokens] = tok;
 			(*num_tokens)++;
 			tokenizer.offset += num_size;
-			token_print(&tok);
+			// token_print(&tok);
 			continue;
 		}
+		// Check for binary operators
+			if(tokenizer_is_symbol(pos, "+")) {
+				Token tok = tokenizer_make_symbol(a, TOK_PLUS, &tokenizer);
+				tokens[(*num_tokens)++] = tok;
+				continue;
+			};
+			if(tokenizer_is_symbol(pos, "-")) {
+				Token tok = tokenizer_make_symbol(a, TOK_MINUS, &tokenizer);
+				tokens[(*num_tokens)++] = tok;
+				continue;
+			};
+			if(tokenizer_is_symbol(pos, "*")) {
+				Token tok = tokenizer_make_symbol(a, TOK_MUL, &tokenizer);
+				tokens[(*num_tokens)++] = tok;
+				continue;
+			};
+			if(tokenizer_is_symbol(pos, "/")) {
+				Token tok = tokenizer_make_symbol(a, TOK_DIV, &tokenizer);
+				tokens[(*num_tokens)++] = tok;
+				continue;
+			};
+			if(tokenizer_is_symbol(pos, "@")) {
+				Token tok = tokenizer_make_symbol(a, TOK_AT, &tokenizer);
+				tokens[(*num_tokens)++] = tok;
+				continue;
+			};
 
 		// Check for special symbols
 		if(tokenizer_is_symbol(pos, "=")) {
-			Token tok = {
-				tok.type  = TOK_EQ,
-				tok.value = NULL,
-			};
-			tokens[*num_tokens] = tok;
-			(*num_tokens)++;
-			tokenizer.offset += 1;
-			token_print(&tok);
+			Token tok = tokenizer_make_symbol(a, TOK_EQ, &tokenizer);
+			tokens[(*num_tokens)++] = tok;
 			continue;
 		};
 		if(tokenizer_is_symbol(pos, "(")) {
-			Token tok = {
-				tok.type  = TOK_LPAREN,
-			};
-			tokens[*num_tokens] = tok;
-			(*num_tokens)++;
-			tokenizer.offset += 1;
-			token_print(&tok);
+			Token tok = tokenizer_make_symbol(a, TOK_LPAREN, &tokenizer);
+			tokens[(*num_tokens)++] = tok;
 			continue;
 		};
 		if(tokenizer_is_symbol(pos, ")")) {
-			Token tok = {
-				tok.type  = TOK_RPAREN,
-			};
-			tokens[*num_tokens] = tok;
-			(*num_tokens)++;
-			tokenizer.offset += 1;
-			token_print(&tok);
+			Token tok = tokenizer_make_symbol(a, TOK_RPAREN, &tokenizer);
+			tokens[(*num_tokens)++] = tok;
 			continue;
 		};
 		if(tokenizer_is_symbol(pos, "[")) {
-			Token tok = {
-				tok.type  = TOK_LBRACKET,
-			};
-			tokens[*num_tokens] = tok;
-			(*num_tokens)++;
-			tokenizer.offset += 1;
-			token_print(&tok);
+			Token tok = tokenizer_make_symbol(a, TOK_LBRACKET, &tokenizer);
+			tokens[(*num_tokens)++] = tok;
 			continue;
 		};
 		if(tokenizer_is_symbol(pos, "]")) {
-			Token tok = {
-				tok.type  = TOK_RBRACKET,
-			};
-			tokens[*num_tokens] = tok;
-			(*num_tokens)++;
-			tokenizer.offset += 1;
-			token_print(&tok);
+			Token tok = tokenizer_make_symbol(a, TOK_RBRACKET, &tokenizer);
+			tokens[(*num_tokens)++] = tok;
 			continue;
 		};
 		if(tokenizer_is_symbol(pos, ",")) {
-			Token tok = {
-				tok.type  = TOK_COMMA,
-			};
-			tokens[*num_tokens] = tok;
-			(*num_tokens)++;
-			tokenizer.offset += 1;
-			token_print(&tok);
+			Token tok = tokenizer_make_symbol(a, TOK_COMMA, &tokenizer);
+			tokens[(*num_tokens)++] = tok;
 			continue;
 		};
 
@@ -354,8 +392,463 @@ int tokenize_line(Arena *a, const char *line, size_t n, Token *tokens , size_t *
 
 }
 
-int parse_line(char *line, size_t n){
-	// Includes newlines
+//============================== 
+//
+//    Parsing
+//
+//============================== 
+
+// X-Macros are convenient here :)
+
+#define AST_NODES_LIST           \
+	      X(AST_PROGRAM)           \
+	      X(AST_STATEMENT_LIST)    \
+	      X(AST_STATEMENT)         \
+	      X(AST_LITERAL)        \
+	      X(AST_BINARY_OP)        \
+	      X(AST_FN_CALL)        \
+	      X(AST_ARGS_LIST)         \
+	      X(AST_NODE_TYPE_COUNT)
+				
+
+typedef enum {
+#define X(name) name,
+	AST_NODES_LIST
+#undef X
+} ASTNodeType;
+
+// Expression value types
+
+typedef enum {
+	VALUE_NUMBER,
+	VALUE_STRING,
+	VALUE_POLYNOMIAL,
+	VALUE_TF,
+
+	// Things to think about
+	VALUE_ARRAY,
+	VALUE_MATRIX,
+	VALUE_TYPE_COUNT
+} ValueType;
+
+typedef enum {
+	STATEMENT_ASSIGN,
+	STATEMENT_EXPR,
+} StatementType;
+
+// Forward declarations
+typedef struct AST AST;
+
+struct AST {
+	ASTNodeType type;
+	AST*  parent;	
+
+	AST* next; // Optional, useful for linked lists
+
+	union {
+		
+		struct {
+			size_t num_statements;
+			AST    *statements_list;
+		} program;
+
+		struct {
+			StatementType type;
+			char          *dst;
+			AST           *expr;
+		} statement;
+
+		struct {
+			ValueType valueType;
+			union {
+				Polynomial poly;
+				TF         tf;
+				double     number;
+				char       *str;
+			} value;
+		} literal;
+
+		struct   {
+			char   *fn_name;
+			size_t num_arguments;
+			AST    *first_arg;
+		} fn_call;
+
+		struct {
+			TokenType op;
+			AST       *left;
+			AST       *right;
+		} binop;
+
+	
+
+	} as;
+
+
+};
+
+void ast_node_repr(AST *ast, char *buf){
+	int repr_size = 0;
+	switch(ast->type){
+#define X(name) case name:   { repr_size = sprintf(buf, #name); break;}
+		AST_NODES_LIST
+#undef X
+	}
+	buf[repr_size] = '\0';
+}
+
+void ast_node_print(AST *ast){
+	char buf[256];
+	ast_node_repr(ast, buf);
+	printf("%s\n", buf);
+}
+
+typedef struct {
+	Token  *tokens;
+	size_t num_tokens;
+	size_t offset;
+} Parser;
+
+int parser_done(Parser *parser){
+	return !(parser->offset < parser->num_tokens);
+}
+
+Token *parser_peek(Parser *parser){
+	if(parser->offset < parser->num_tokens) return &parser->tokens[parser->offset];
+	return NULL;
+}
+
+AST *ast_alloc(Arena *a, ASTNodeType type){
+	AST *node = arena_alloc(a, sizeof(AST));
+	memset(node, 0, sizeof(AST));
+	node->type = type;
+	return node;
+}
+
+Token *parser_eat(TokenType type, Parser *parser){
+	Token *next = parser_peek(parser);
+	if(next->type == type){
+		parser->offset++;
+		return next;
+	}
+	char buf[256];
+	token_type_repr(type, buf);
+	fprintf(stderr, "Expected a token of type %s at position %zu\n", buf, parser->offset);
+	return NULL;
+}
+
+AST *ast_make_number(Arena *a, double number){
+	AST *expr = ast_alloc(a, AST_LITERAL);
+	expr->as.literal.value.number = number;
+	expr->as.literal.valueType = VALUE_NUMBER;
+	return expr;
+}
+
+AST *ast_make_id(Arena *a, char *id){
+	AST *expr = ast_alloc(a, AST_LITERAL);
+	expr->as.literal.value.str = id;
+	expr->as.literal.valueType = VALUE_STRING;
+	return expr;
+}
+
+
+AST *ast_make_fn_call(Arena *a, const char *fn_name){
+	AST *fn_call = ast_alloc(a, AST_FN_CALL);
+	fn_call->as.fn_call.num_arguments = 0;
+	fn_call->as.fn_call.fn_name       = arena_alloc(a, strlen(fn_name) + 1);
+	fn_call->as.fn_call.first_arg     = NULL;
+	strcpy(fn_call->as.fn_call.fn_name, fn_name);
+	return fn_call;
+}
+
+AST *ast_make_binop(Arena *a, TokenType op){
+	AST *binop = ast_alloc(a, AST_BINARY_OP); 
+	binop->as.binop.left = NULL;
+	binop->as.binop.right = NULL;
+	binop->as.binop.op = op;
+	return binop;
+}
+
+AST *ast_make_statement(Arena *a, StatementType type){
+	AST *stmt               = ast_alloc(a, AST_STATEMENT);
+	stmt->as.statement.type = type;
+	return stmt;
+}
+
+
+AST *parse_expression(Arena *a, AST *parent, Parser *parser); // Forward declaration
+AST *parse_term(Arena *a, AST *parent, Parser *parser);
+AST *parse_expo(Arena *a, AST *parent, Parser *parser);
+AST *parse_primary(Arena *a, AST *parent, Parser *parser);
+
+
+AST *parse_fn_call(Arena *a, AST *parent, Parser *parser, char* fn_name){
+		if(parser_eat(TOK_LPAREN, parser) == NULL) return NULL;
+		AST *fn_call = ast_make_fn_call(a, fn_name);
+		if(!parser_done(parser) && parser_peek(parser)->type == TOK_RPAREN){
+			if(parser_eat(TOK_RPAREN, parser) == NULL) return NULL;
+			return fn_call;
+		}
+
+		AST *head = parse_expression(a, parent, parser);
+		if(parser_peek(parser)->type == TOK_COMMA) parser_eat(TOK_COMMA, parser);
+		AST *tail = NULL;
+		if(head == NULL){
+			if(parser_eat(TOK_RPAREN, parser) == NULL) return NULL;
+			return fn_call;
+		}
+		fn_call->as.fn_call.first_arg = head;
+		tail = head;
+
+		while(!parser_done(parser) && parser_peek(parser)->type != TOK_RPAREN){
+			AST *expr = parse_expression(a, parent, parser);
+			if(parser_peek(parser)->type == TOK_COMMA) parser_eat(TOK_COMMA, parser);
+			tail->next = expr;
+			tail       = expr;
+		}
+
+		if(parser_eat(TOK_RPAREN, parser) == NULL) return NULL;
+		return fn_call;
+}
+
+AST *parse_primary(Arena *a, AST *parent, Parser *parser) {
+	Token *current = parser_peek(parser);
+
+	if(current->type == TOK_NUMBER)
+	{
+		if(parser_eat(TOK_NUMBER, parser) == NULL) return NULL;
+		AST *expr = ast_make_number(a, atof(current->value));
+		expr->parent = parent;
+		return expr;
+
+	} else if(current->type == TOK_ID)
+	{
+		Token *id_tok = parser_eat(TOK_ID, parser);
+
+		if(!parser_done(parser) && parser_peek(parser)->type == TOK_LPAREN){
+			// Calling a function
+			AST *fn_call = parse_fn_call(a, parent, parser, id_tok->value);
+			return fn_call;
+		}
+
+		AST *src = ast_make_id(a, current->value);
+		src->parent = parent;
+		return src;
+	} else
+	{
+		if(parser_eat(TOK_LPAREN, parser) == NULL) return NULL;
+		AST *expr = parse_expression(a, parent, parser);
+		if(parser_eat(TOK_RPAREN, parser) == NULL) return NULL;
+		return expr;
+	}
+	return NULL;
+}
+
+AST *parse_term(Arena *a, AST *parent, Parser *parser){
+	AST *left = parse_expo(a, parent, parser);
+	while(!parser_done(parser) &&
+			(parser_peek(parser)->type == TOK_MUL ||
+			 parser_peek(parser)->type == TOK_AT  ||
+			 parser_peek(parser)->type == TOK_DIV 
+			 )
+		)
+	{
+		Token *op_tok         = parser_eat(parser_peek(parser)->type, parser);
+		AST   *binop          = ast_make_binop(a, op_tok->type);
+		AST   *right          = parse_expo(a, parent, parser);
+		binop->as.binop.left  = left;
+		binop->as.binop.right = right;
+		left = binop;
+	}
+	return left;
+}
+
+AST *parse_expo(Arena *a, AST *parent, Parser *parser){
+	AST *primary = parse_primary(a, parent, parser);
+	if(!parser_done(parser) && parser_peek(parser)->type == TOK_POW){
+		Token *op_tok         = parser_eat(parser_peek(parser)->type, parser);
+		AST   *binop          = ast_make_binop(a, op_tok->type);
+		AST   *right          = parse_expo(a, parent, parser);
+		binop->as.binop.left  = primary;
+		binop->as.binop.right = right;
+		return binop;
+	}
+	return primary;
+}
+
+AST *parse_expression(Arena *a, AST *parent, Parser *parser){
+	AST *left = parse_term(a, parent, parser);
+	while(!parser_done(parser) && (
+			parser_peek(parser)->type == TOK_PLUS ||
+			parser_peek(parser)->type == TOK_MINUS)
+		)
+	{
+		Token *op_tok         = parser_eat(parser_peek(parser)->type, parser);
+		AST   *binop          = ast_make_binop(a, op_tok->type);
+		AST   *right          = parse_term(a, parent, parser);
+		binop->as.binop.left  = left;
+		binop->as.binop.right = right;
+		left = binop;
+	}
+	return left;
+}
+
+
+
+AST *parse_statement(Arena *a, AST *parent, Parser *parser){
+	Token *current = parser_peek(parser);
+
+	if(current->type == TOK_KEYWORD && (strcmp(current->value, "let") == 0)){
+		AST *stmt     = ast_make_statement(a, STATEMENT_ASSIGN);
+		stmt->parent  = parent;
+
+		if(parser_eat(TOK_KEYWORD, parser) == NULL) return NULL;
+
+		Token *id_tok = parser_eat(TOK_ID, parser);
+
+		if(id_tok == NULL){
+			return NULL;
+		}
+
+		if(parser_eat(TOK_EQ, parser) == NULL) return NULL;
+
+		stmt->as.statement.dst  = arena_alloc(a, strlen(id_tok->value) + 1);
+		strcpy(stmt->as.statement.dst, id_tok->value);
+
+		AST *expr               = parse_expression(a, stmt, parser);
+		stmt->as.statement.expr = expr;
+
+		return stmt;
+	}else{
+		AST *stmt               = ast_make_statement(a, STATEMENT_EXPR);
+		AST *expr               = parse_expression(a, stmt, parser);
+		stmt->as.statement.expr = expr;
+		return stmt;
+	}
+}
+
+AST *parse_statements_list(Arena *a, AST *program_node, Parser *parser){
+	if(parser_done(parser)) return NULL;
+
+	size_t num_statements = 0;
+
+	AST *head = NULL;
+	AST *tail = NULL;
+	head = parse_statement(a, program_node, parser);
+	head->parent = program_node;
+	if(head == NULL){
+		fprintf(stderr, "Parsing error at position %zu\n", parser->offset);
+		return NULL;
+	}
+
+	num_statements++;
+	tail = head;
+
+	while(!parser_done(parser)){
+		AST *stmt = parse_statement(a, program_node, parser);
+		if(stmt == NULL){
+			break;
+		}
+		stmt->parent = program_node;
+		tail->next   = stmt;
+		tail         = stmt;
+		num_statements++;
+	}
+
+	program_node->as.program.num_statements = num_statements;
+	return head;
+}
+
+
+
+int parse_tokens(Arena *a, AST *ast, Token *tokens, size_t num_tokens){
+	// printf("Parsing...\n");
+	ast->parent = NULL;
+	ast->type = AST_PROGRAM;
+
+	Parser parser;
+	parser.num_tokens = num_tokens;
+	parser.tokens     = tokens;
+	parser.offset     = 0;
+
+	if(num_tokens == 0) return 0;
+
+	AST *list = parse_statements_list(a, ast, &parser);
+	ast->as.program.statements_list = list;
+
+	return list == NULL ? 1 : 0;
+}
+
+void fill_indent(size_t level, char *buf){
+	size_t indent_size = 2;
+	size_t total_spaces = indent_size * level;
+	for(size_t i = 0; i < total_spaces; i++){
+		buf[i] = ' ';
+	}
+	buf[total_spaces] = '\0';
+}
+
+void ast_print(AST *ast, int level){
+	char buf[256];
+	fill_indent(level, buf);
+	switch(ast->type){
+		case AST_PROGRAM:
+			{
+				printf("%sPROGRAM:\n", buf);
+				AST *stmt = ast->as.program.statements_list;
+				while(stmt != NULL){
+					ast_print(stmt, level + 1);
+					stmt = stmt->next;
+				}
+				break;
+			}
+		case AST_STATEMENT:
+			{
+				printf("%sSTMT:\n", buf);
+				fill_indent(level + 1, buf);
+				printf("%sSRC:  %s\n", buf, ast->as.statement.dst);
+				printf("%sEXP:\n", buf);
+				ast_print(ast->as.statement.expr, level + 2);
+				break;
+			}
+		case AST_LITERAL:
+			{
+				if(ast->as.literal.valueType == VALUE_STRING){
+					printf("%sLIT: %s\n", buf, ast->as.literal.value.str);
+				} else if(ast->as.literal.valueType == VALUE_NUMBER){
+					printf("%sLIT: %.2f\n", buf, ast->as.literal.value.number);
+				}
+				break;
+			}
+		case AST_FN_CALL:
+			{
+				printf("%sFN[%s]:\n", buf, ast->as.fn_call.fn_name);
+				AST *arg = ast->as.fn_call.first_arg;
+				while(arg != NULL){
+					ast_print(arg, level + 1);
+					arg = arg->next;
+				}
+				break;
+			}
+		case AST_BINARY_OP:
+			{
+				char opBuf[128];
+				token_type_repr(ast->as.binop.op, opBuf);
+				printf("%sBINOP[%s]:\n", buf, opBuf);
+				fill_indent(level + 1, buf);
+				printf("%sLEFT:\n", buf);
+				ast_print(ast->as.binop.left, level + 2);
+				fill_indent(level + 1, buf);
+				printf("%sRIGHT:\n", buf);
+				ast_print(ast->as.binop.right, level + 2);
+				break;
+			}
+	}
+}
+
+
+int parse_line(Arena *a, const char *line){
+	// Null-terminated
 
   // --------- Basic commands -----------
 
@@ -363,6 +856,25 @@ int parse_line(char *line, size_t n){
 		printf("\nExiting...\n");
 		exit(0);
 	}
+
+  // --------- Commands that require parsing -----------
+
+	Token  tokens[1024];
+	size_t num_tokens = 0;
+	int    err        = 0;
+	err = tokenize_line(a, line, strlen(line), tokens, &num_tokens);
+	if(err != 0){
+		fprintf(stderr, "Tokenization error\n");
+		return err;
+	}
+
+	AST ast;
+	err = parse_tokens(a, &ast, tokens, num_tokens);
+	if(err != 0){
+		return err;
+	}
+
+	if(err == 0) ast_print(&ast, 0);
 
 	return 0;
 
@@ -378,34 +890,32 @@ int main(){
 	Arena a = arena_create(1024 * 1024); // 1 MB for now
 	Enviromnent e = {0};
 
-	const char *line = "let p = poly(1.23,2,3)";
-	Token tokens[1024];
-	size_t num_tokens = 0;
-	tokenize_line(&a, line, strlen(line), tokens, &num_tokens);
+	// const char *line = "let p = (((poly() + sqr(3) + (5))))";
+	// parse_line(&a, line);
 
-	// while(1){
+	 while(1){
 
-	// 	printf("tiny-ctrl> ");
-	// 	nread = getline(&buffer, &size, stdin);
-	// 	if(nread == -1){
-	// 		printf("\nExiting...\n");
-	// 		break;
-	// 	}
+	 	printf("tiny-ctrl> ");
+	 	nread = getline(&buffer, &size, stdin);
+	 	if(nread == -1){
+	 		printf("\nExiting...\n");
+	 		break;
+	 	}
 
-	// 	// Trimming the endline characters
-	// 	last_good = strcspn(buffer, "\r\n");
-	// 	buffer[last_good] = '\0';
+	 	// Trimming the endline characters
+	 	last_good = strcspn(buffer, "\r\n");
+	 	buffer[last_good] = '\0';
 
-	// 	printf("Read (%zu): %s", last_good, buffer);
-	// 	parse_code = parse_line(buffer, last_good);
-	// 	if(parse_code != 0){
-	// 		printf("Exiting with code %i...\n", parse_code);
-	// 		break;
-	// 	}
+	 	// printf("Read (%zu): %s", last_good, buffer);
+	 	parse_code = parse_line(&a, buffer);
+	 	if(parse_code != 0){
+	 		printf("Exiting with code %i...\n", parse_code);
+	 		break;
+	 	}
 
-	// }
-
-	free(buffer);
+	 }
+  
+	 free(buffer);
 	arena_destroy(&a);
 	if(parse_code != 0){
 		exit(parse_code);

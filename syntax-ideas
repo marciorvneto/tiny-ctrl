@@ -4,7 +4,7 @@
 //
 // =======================
 
-let num = poly(5, 1, -2, 1)
+let den = poly(5, 1, -2, 1)
 
 // =======================
 //
@@ -22,4 +22,38 @@ let num = poly(-1, 1)
 //
 // =======================
 
-let tf = tf(5, 1, -2, 1)
+let tf = tf(num, den)
+
+
+
+// Grammar
+
+PROGRAM         = STATEMENTS_LIST
+			          | eof
+
+STATEMENTS_LIST = STATEMENT
+								| STATEMENT STATEMENTS_LIST
+
+STATEMENT       = "let" id "=" EXPRESSION
+				        | id
+
+EXPRESSION      = EXPRESSION + TERM
+  					    | EXPRESSION - TERM
+  					    | TERM
+
+TERM            = TERM * EXPO
+  					    | TERM / EXPO
+  					    | EXPO
+
+EXPO            = PRIMARY ^ EXPO
+  					    | PRIMARY
+
+PRIMARY         = number
+  					    | id
+  					    | id "(" ARGS_LIST ")"
+  					    | "(" EXPRESSION ")"
+
+
+ARGS_LIST       = EXPRESSION
+				        | ARGS_LIST, EXPRESSION
+				        | eps
