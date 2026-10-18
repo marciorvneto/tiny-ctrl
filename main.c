@@ -42,6 +42,18 @@ void *arena_alloc(Arena *a, size_t size){
 	return a->base + aligned_offset;
 }
 
+size_t arena_save(Arena *a){
+	return a->offset;
+}
+
+void arena_restore(Arena *a, size_t offset){
+	a->offset = offset;
+}
+
+#define CONCAT_INTERNAL(x,y) x##y
+#define CONCAT(x, y) CONCAT_INTERNAL(x, y)
+#define SCRATCH_SCOPE(arena) for(size_t CONCAT(scratch_, __LINE__) = arena_save(arena), _once = 1; _once == 1; arena_restore(arena, CONCAT(scratch_, __LINE__)), _once = 0)
+
 //============================== 
 //
 //    Data structures
@@ -479,12 +491,7 @@ struct AST {
 			AST       *left;
 			AST       *right;
 		} binop;
-
-	
-
 	} as;
-
-
 };
 
 void ast_node_repr(AST *ast, char *buf){
@@ -762,7 +769,6 @@ AST *parse_statements_list(Arena *a, AST *program_node, Parser *parser){
 
 
 int parse_tokens(Arena *a, AST *ast, Token *tokens, size_t num_tokens){
-	// printf("Parsing...\n");
 	ast->parent = NULL;
 	ast->type = AST_PROGRAM;
 
@@ -847,7 +853,7 @@ void ast_print(AST *ast, int level){
 }
 
 
-int parse_line(Arena *a, const char *line){
+int parse_line(Arena *a, const char *line, AST *ast){
 	// Null-terminated
 
   // --------- Basic commands -----------
@@ -868,17 +874,31 @@ int parse_line(Arena *a, const char *line){
 		return err;
 	}
 
-	AST ast;
-	err = parse_tokens(a, &ast, tokens, num_tokens);
+	err = parse_tokens(a, ast, tokens, num_tokens);
 	if(err != 0){
 		return err;
 	}
 
-	if(err == 0) ast_print(&ast, 0);
-
+	if(err == 0) ast_print(ast, 0);
 	return 0;
-
 }
+
+//============================== 
+//
+//    Interpreting
+//
+//============================== 
+
+int run_ast(AST *ast){
+	return 0;
+}
+
+
+//============================== 
+//
+//    Main
+//
+//============================== 
 
 int main(){
 	char *buffer      = NULL; // Null-terminated
@@ -907,7 +927,12 @@ int main(){
 	 	buffer[last_good] = '\0';
 
 	 	// printf("Read (%zu): %s", last_good, buffer);
-	 	parse_code = parse_line(&a, buffer);
+
+		SCRATCH_SCOPE(&a){
+			AST *ast = arena_alloc(&a, sizeof(AST));
+			parse_code = parse_line(&a, buffer, ast);
+			run_ast(ast);
+		}
 	 	if(parse_code != 0){
 	 		printf("Exiting with code %i...\n", parse_code);
 	 		break;
