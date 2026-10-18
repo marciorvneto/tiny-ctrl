@@ -35,7 +35,7 @@ STATEMENTS_LIST = STATEMENT
 								| STATEMENT STATEMENTS_LIST
 
 STATEMENT       = "let" id "=" EXPRESSION
-				        | id
+				        | EXPRESSION
 
 EXPRESSION      = EXPRESSION + TERM
   					    | EXPRESSION - TERM

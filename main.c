@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #define ALIGNMENT 16 	// Might change that in the future
 #define ALIGN_ALLOC(offset, align) ((offset + ((align) - 1)) & (~((align) - 1))) // Alignment trick
@@ -112,31 +113,6 @@ typedef struct {
 	Polynomial den;
 } TF;
 
-//============================== 
-//
-//    Environment
-//
-//============================== 
-
-typedef enum {
-	VAR_POLYNOMIAL,
-	VAR_TF,
-	VAR_NUM,
-} VarType;
-
-typedef struct {
-	char    *name;
-	VarType type;
-	union {
-		Polynomial poly;
-		TF         tf;
-	} as;
-} Variable;
-
-typedef struct {
-	Variable *vars;
-	size_t   num_vars;
-} Enviromnent;
 
 //============================== 
 //
@@ -451,14 +427,23 @@ typedef enum {
 // Forward declarations
 typedef struct AST AST;
 
+typedef struct {
+	ValueType valueType;
+	union {
+		Polynomial poly;
+		TF         tf;
+		double     number;
+		char       *str;
+	} value;
+} Value;
+
+
 struct AST {
 	ASTNodeType type;
-	AST*  parent;	
-
-	AST* next; // Optional, useful for linked lists
+	AST*        parent;
+	AST*        next; // Optional, useful for linked lists
 
 	union {
-		
 		struct {
 			size_t num_statements;
 			AST    *statements_list;
@@ -470,15 +455,7 @@ struct AST {
 			AST           *expr;
 		} statement;
 
-		struct {
-			ValueType valueType;
-			union {
-				Polynomial poly;
-				TF         tf;
-				double     number;
-				char       *str;
-			} value;
-		} literal;
+		Value literal;
 
 		struct   {
 			char   *fn_name;
@@ -879,9 +856,20 @@ int parse_line(Arena *a, const char *line, AST *ast){
 		return err;
 	}
 
-	if(err == 0) ast_print(ast, 0);
+	// if(err == 0) ast_print(ast, 0);
 	return 0;
 }
+
+//============================== 
+//
+//    Environment
+//
+//============================== 
+
+typedef struct {
+	Value  *vars;
+	size_t num_vars;
+} Enviromnent;
 
 //============================== 
 //
@@ -889,7 +877,112 @@ int parse_line(Arena *a, const char *line, AST *ast){
 //
 //============================== 
 
-int run_ast(AST *ast){
+Value make_num(double num){
+	Value v = {
+		.valueType    = VALUE_NUMBER,
+		.value.number = num
+	};
+	return v;
+}
+
+
+Value eval_binop(Arena *a, Enviromnent *e, AST *op, Value *left, Value *right){
+	// Number op Number
+
+	if(left->valueType == VALUE_NUMBER && left->valueType == VALUE_NUMBER){
+
+		switch(op->as.binop.op){
+			case TOK_PLUS:
+				{
+					return make_num(left->value.number + right->value.number);
+				}
+			case TOK_MINUS:
+				{
+					return make_num(left->value.number - right->value.number);
+				}
+			case TOK_MUL:
+				{
+					return make_num(left->value.number * right->value.number);
+				}
+			case TOK_DIV:
+				{
+					return make_num(left->value.number / right->value.number);
+				}
+			case TOK_POW:
+				{
+					return make_num(powf(left->value.number, right->value.number));
+				}
+			default:
+				{
+					fprintf(stderr, "Unreachable\n");
+					exit(1);
+				}
+		}
+	}
+
+	fprintf(stderr, "Expected 2 numbers, got something else!\n");
+	exit(1);
+
+}
+
+void print_value(Value *value){
+	switch(value->valueType){
+		case VALUE_NUMBER:
+			{
+				printf("%.4f\n", value->value.number);
+				break;
+			}
+		case VALUE_STRING:
+			{
+				printf("%s\n", value->value.str);
+				break;
+			}
+		default:
+			{
+				printf("<UNK>\n");
+				break;
+			}
+	}
+}
+
+Value eval_expr(Arena *a, Enviromnent *e, AST *expr){
+	Value value = {0};
+
+	if(expr->type == AST_LITERAL){
+		value.valueType = expr->as.literal.valueType;
+		value.value = expr->as.literal.value;
+	}
+
+	if(expr->type == AST_BINARY_OP){
+		Value left   = eval_expr(a,  e, expr->as.binop.left);
+		Value right  = eval_expr(a,  e, expr->as.binop.right);
+		Value result = eval_binop(a, e, expr, &left, &right);
+		return result;
+	}
+	return value;
+}
+
+int eval_stmt(Arena *a, AST *ast, Enviromnent *e, AST *stmt){
+
+	if(stmt->as.statement.type == STATEMENT_EXPR){
+		Value result = eval_expr(a, e, stmt->as.statement.expr);
+		print_value(&result);
+		return 0;
+	}
+
+	return 0;
+}
+
+int run_ast(Arena *a, AST *ast, Enviromnent *e){
+
+	AST *stmt = ast->as.program.statements_list;
+
+	while(stmt != NULL){
+		int status = eval_stmt(a, ast, e, stmt);
+		if(status != 0) return status;
+		stmt = stmt->next;
+	}
+
 	return 0;
 }
 
@@ -907,7 +1000,8 @@ int main(){
 	ssize_t last_good = 0;
 	int parse_code    = 0;
 
-	Arena a = arena_create(1024 * 1024); // 1 MB for now
+	Arena temp_arena = arena_create(1024 * 1024);      // 1 MB for now
+	Arena a          = arena_create(32 * 1024 * 1024); // 32 MB for now
 	Enviromnent e = {0};
 
 	// const char *line = "let p = (((poly() + sqr(3) + (5))))";
@@ -926,12 +1020,10 @@ int main(){
 	 	last_good = strcspn(buffer, "\r\n");
 	 	buffer[last_good] = '\0';
 
-	 	// printf("Read (%zu): %s", last_good, buffer);
-
-		SCRATCH_SCOPE(&a){
-			AST *ast = arena_alloc(&a, sizeof(AST));
-			parse_code = parse_line(&a, buffer, ast);
-			run_ast(ast);
+		SCRATCH_SCOPE(&temp_arena){
+			AST *ast = arena_alloc(&temp_arena, sizeof(AST));
+			parse_code = parse_line(&temp_arena, buffer, ast);
+			run_ast(&a, ast, &e);
 		}
 	 	if(parse_code != 0){
 	 		printf("Exiting with code %i...\n", parse_code);
@@ -941,6 +1033,7 @@ int main(){
 	 }
   
 	 free(buffer);
+	arena_destroy(&temp_arena);
 	arena_destroy(&a);
 	if(parse_code != 0){
 		exit(parse_code);
