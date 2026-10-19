@@ -9,6 +9,7 @@
 #define ALIGN_ALLOC(offset, align) ((offset + ((align) - 1)) & (~((align) - 1))) // Alignment trick
 
 #define UNREACHABLE(x) do { fprintf(stderr, "Unreachable: " x); exit(1); } while(0);
+#define MAX(x,y) ((x) > (y) ? (x) : (y))
 
 //============================== 
 //
@@ -1033,7 +1034,7 @@ void  env_list_variables(Arena* a, Enviromnent  *e){
 //
 //============================== 
 
-typedef Value (*BinaryFn)(Value *left, Value *right);
+typedef Value (*BinaryFn)(Arena *a, Value *left, Value *right);
 
 Value make_num(double num){
 	Value v = {
@@ -1065,26 +1066,26 @@ Value make_nan(){
 	return v;
 }
 
-Value op_with_nan(Value *left, Value *right){
+Value op_with_nan(Arena *a, Value *left, Value *right){
 	return make_nan();
 }
-Value add_num_num(Value *left, Value *right){
+Value add_num_num(Arena *a, Value *left, Value *right){
 		return make_num(left->value.number + right->value.number);
 }
-Value sub_num_num(Value *left, Value *right){
+Value sub_num_num(Arena *a, Value *left, Value *right){
 		return make_num(left->value.number - right->value.number);
 }
-Value mul_num_num(Value *left, Value *right){
+Value mul_num_num(Arena *a, Value *left, Value *right){
 		return make_num(left->value.number * right->value.number);
 }
-Value div_num_num(Value *left, Value *right){
+Value div_num_num(Arena *a, Value *left, Value *right){
 		return make_num(left->value.number / right->value.number);
 }
-Value pow_num_num(Value *left, Value *right){
+Value pow_num_num(Arena *a, Value *left, Value *right){
 		return make_num(powf(left->value.number, right->value.number));
 }
 
-Value add_num_array(Value *left, Value *right){
+Value add_num_array(Arena *a, Value *left, Value *right){
 		double num = left->valueType == VALUE_NUMBER ? left->value.number : right->value.number;
 		Array  arr = left->valueType == VALUE_ARRAY ? left->value.array : right->value.array;
 		for(size_t i = 0; i < arr.size; i++){
@@ -1092,7 +1093,7 @@ Value add_num_array(Value *left, Value *right){
 		}
 		return make_array(arr);
 }
-Value add_array_array(Value *left, Value *right){
+Value add_array_array(Arena *a, Value *left, Value *right){
 		Array arr1 = left->value.array;
 		Array arr2 = right->value.array;
 		if(arr1.size != arr2.size){
@@ -1104,7 +1105,7 @@ Value add_array_array(Value *left, Value *right){
 		}
 		return make_array(arr1);
 }
-Value sub_num_array(Value *left, Value *right){
+Value sub_num_array(Arena *a, Value *left, Value *right){
 		double num         = left->valueType == VALUE_NUMBER ? left->value.number : right->value.number;
 		Array  arr         = left->valueType == VALUE_ARRAY ? left->value.array : right->value.array;
 		double left_is_num = left->valueType == VALUE_NUMBER;
@@ -1117,7 +1118,7 @@ Value sub_num_array(Value *left, Value *right){
 		}
 		return make_array(arr);
 }
-Value sub_array_array(Value *left, Value *right){
+Value sub_array_array(Arena *a, Value *left, Value *right){
 		Array arr1 = left->value.array;
 		Array arr2 = right->value.array;
 		if(arr1.size != arr2.size){
@@ -1130,78 +1131,156 @@ Value sub_array_array(Value *left, Value *right){
 		return make_array(arr1);
 }
 
+// ------------- Polynomials --------------------
+
+Value add_num_poly(Arena *a, Value *left, Value *right){
+		double num       = left->valueType == VALUE_NUMBER ? left->value.number : right->value.number;
+		Polynomial  poly = left->valueType == VALUE_POLYNOMIAL ? left->value.poly : right->value.poly;
+		poly.coeffs[0] += num;
+		return make_poly(poly);
+}
+
+Value add_poly_poly(Arena *a, Value *left, Value *right){
+		Polynomial p1    = left->value.poly;
+		Polynomial p2    = right->value.poly;
+		size_t max_size  = MAX(p1.num_coeffs, p2.num_coeffs);
+
+		Polynomial pnew;
+		pnew.num_coeffs = max_size;
+		pnew.deg        = max_size - 1;
+		pnew.coeffs     = arena_alloc(a, max_size * sizeof(double));
+
+		for(size_t i = 0; i < max_size; i++){
+			double v1 = 0;
+			double v2 = 0;
+			if(i < p1.num_coeffs) v1 = p1.coeffs[i];
+			if(i < p2.num_coeffs) v2 = p2.coeffs[i];
+			pnew.coeffs[i] = v1 + v2;
+		}
+
+		return make_poly(pnew);
+}
+
+Value sub_num_poly(Arena *a, Value *left, Value *right){
+		double num         = left->valueType == VALUE_NUMBER ? left->value.number : right->value.number;
+		Polynomial  poly   = left->valueType == VALUE_POLYNOMIAL ? left->value.poly : right->value.poly;
+		double left_is_num = left->valueType == VALUE_NUMBER;
+		if(left_is_num) poly.coeffs[0] = num - poly.coeffs[0];
+		else poly.coeffs[0] -= num;
+		return make_poly(poly);
+}
+
+
+Value sub_poly_poly(Arena *a, Value *left, Value *right){
+		Polynomial p1    = left->value.poly;
+		Polynomial p2    = right->value.poly;
+		size_t max_size  = MAX(p1.num_coeffs, p2.num_coeffs);
+
+		Polynomial pnew;
+		pnew.num_coeffs = max_size;
+		pnew.deg        = max_size - 1;
+		pnew.coeffs     = arena_alloc(a, max_size * sizeof(double));
+
+		for(size_t i = 0; i < max_size; i++){
+			double v1 = 0;
+			double v2 = 0;
+			if(i < p1.num_coeffs) v1 = p1.coeffs[i];
+			if(i < p2.num_coeffs) v2 = p2.coeffs[i];
+			pnew.coeffs[i] = v1 - v2;
+		}
+
+		return make_poly(pnew);
+}
+
+
+
 
 static const BinaryFn binop_dispatch[OP_TYPE_LIST_COUNT][VALUE_TYPE_COUNT][VALUE_TYPE_COUNT] = {
 	[OP_PLUS] = {
 		[VALUE_NUMBER] = {
-			[VALUE_NUMBER] = add_num_num,
-			[VALUE_ARRAY] = add_num_array,
-			[VALUE_NAN] = op_with_nan,
+			[VALUE_NUMBER]     = add_num_num,
+			[VALUE_ARRAY]      = add_num_array,
+			[VALUE_POLYNOMIAL] = add_num_poly,
+			[VALUE_NAN]        = op_with_nan,
 		},
 		[VALUE_ARRAY] = {
-			[VALUE_NUMBER] = add_num_array,
-			[VALUE_ARRAY] = add_array_array,
-			[VALUE_NAN] = op_with_nan,
+			[VALUE_NUMBER]     = add_num_array,
+			[VALUE_ARRAY]      = add_array_array,
+			[VALUE_POLYNOMIAL] = op_with_nan,
+			[VALUE_NAN]        = op_with_nan,
+		},
+		[VALUE_POLYNOMIAL] = {
+			[VALUE_NUMBER]     = add_num_poly,
+			[VALUE_ARRAY]      = op_with_nan,
+			[VALUE_POLYNOMIAL] = add_poly_poly,
+			[VALUE_NAN]        = op_with_nan,
 		},
 		[VALUE_NAN] = {
-			[VALUE_NUMBER] = op_with_nan,
-			[VALUE_ARRAY] = op_with_nan,
-			[VALUE_NAN] = op_with_nan,
+			[VALUE_NUMBER]     = op_with_nan,
+			[VALUE_ARRAY]      = op_with_nan,
+			[VALUE_POLYNOMIAL] = op_with_nan,
+			[VALUE_NAN]        = op_with_nan,
 		}
 	},
 
 	[OP_MINUS] = {
 		[VALUE_NUMBER] = {
 			[VALUE_NUMBER] = sub_num_num,
-			[VALUE_ARRAY] = sub_num_array,
-			[VALUE_NAN] = op_with_nan,
+			[VALUE_ARRAY]  = sub_num_array,
+			[VALUE_NAN]    = op_with_nan,
 		},
 		[VALUE_ARRAY] = {
 			[VALUE_NUMBER] = sub_num_array,
-			[VALUE_ARRAY] = sub_array_array,
-			[VALUE_NAN] = op_with_nan,
+			[VALUE_ARRAY]  = sub_array_array,
+			[VALUE_NAN]    = op_with_nan,
+		},
+		[VALUE_POLYNOMIAL] = {
+			[VALUE_NUMBER]     = sub_num_poly,
+			[VALUE_ARRAY]      = op_with_nan,
+			[VALUE_POLYNOMIAL] = sub_poly_poly,
+			[VALUE_NAN]        = op_with_nan,
 		},
 		[VALUE_NAN] = {
 			[VALUE_NUMBER] = op_with_nan,
-			[VALUE_ARRAY] = op_with_nan,
-			[VALUE_NAN] = op_with_nan,
+			[VALUE_ARRAY]  = op_with_nan,
+			[VALUE_NAN]    = op_with_nan,
 		}
 	},
 
 	[OP_MUL] = {
 		[VALUE_NUMBER] = {
 			[VALUE_NUMBER] = mul_num_num,
-			[VALUE_NAN] = op_with_nan,
+			[VALUE_NAN]    = op_with_nan,
 		},
 		[VALUE_NAN] = {
 			[VALUE_NUMBER] = op_with_nan,
-			[VALUE_ARRAY] = op_with_nan,
-			[VALUE_NAN] = op_with_nan,
+			[VALUE_ARRAY]  = op_with_nan,
+			[VALUE_NAN]    = op_with_nan,
 		}
 	},
 
 	[OP_DIV] = {
 		[VALUE_NUMBER] = {
 			[VALUE_NUMBER] = div_num_num,
-			[VALUE_NAN] = op_with_nan,
+			[VALUE_NAN]    = op_with_nan,
 		},
 		[VALUE_NAN] = {
 			[VALUE_NUMBER] = op_with_nan,
-			[VALUE_ARRAY] = op_with_nan,
-			[VALUE_NAN] = op_with_nan,
+			[VALUE_ARRAY]  = op_with_nan,
+			[VALUE_NAN]    = op_with_nan,
 		} 
 	},
 
 	[OP_POW] = {
 		[VALUE_NUMBER] = {
 			[VALUE_NUMBER] = pow_num_num,
-			[VALUE_ARRAY] = op_with_nan,
-			[VALUE_NAN] = op_with_nan,
+			[VALUE_ARRAY]  = op_with_nan,
+			[VALUE_NAN]    = op_with_nan,
 		},
 		[VALUE_NAN] = {
 			[VALUE_NUMBER] = op_with_nan,
-			[VALUE_ARRAY] = op_with_nan,
-			[VALUE_NAN] = op_with_nan,
+			[VALUE_ARRAY]  = op_with_nan,
+			[VALUE_NAN]    = op_with_nan,
 		} 
 	},
 };
@@ -1251,7 +1330,7 @@ Value eval_binop(Arena *a, Enviromnent *e, AST *op, Value *raw_left, Value *raw_
 		return make_nan();
 	}
 
-	return fn(left, right);
+	return fn(a, left, right);
 
 
 	fprintf(stderr, "Expected 2 numbers, got something else!\n");
