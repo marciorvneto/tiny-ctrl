@@ -35,6 +35,7 @@ STATEMENTS_LIST = STATEMENT
 								| STATEMENT STATEMENTS_LIST
 
 STATEMENT       = "let" id "=" EXPRESSION
+				        | id "=" EXPRESSION
 				        | EXPRESSION
 
 EXPRESSION      = EXPRESSION + TERM
@@ -51,6 +52,7 @@ EXPO            = PRIMARY ^ EXPO
 PRIMARY         = number
   					    | id
   					    | id "(" ARGS_LIST ")"
+  					    | "[" ARGS_LIST "]"
   					    | "(" EXPRESSION ")"
 
 

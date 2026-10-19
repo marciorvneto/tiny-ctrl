@@ -61,6 +61,10 @@ void arena_restore(Arena *a, size_t offset){
 //
 //============================== 
 
+typedef struct {
+	double* nums;
+	size_t  size;
+} Array;
 
 // Example: 3x2 - 5x + 1:
 // coeffs     = [1, -5, 3]
@@ -393,6 +397,7 @@ int tokenize_line(Arena *a, const char *line, size_t n, Token *tokens , size_t *
 	      X(AST_STATEMENT_LIST)    \
 	      X(AST_STATEMENT)         \
 	      X(AST_LITERAL)        \
+	      X(AST_ARRAY)        \
 	      X(AST_BINARY_OP)        \
 	      X(AST_FN_CALL)        \
 	      X(AST_ARGS_LIST)         \
@@ -408,10 +413,12 @@ typedef enum {
 // Expression value types
 
 typedef enum {
+	VALUE_ID,
 	VALUE_NUMBER,
 	VALUE_STRING,
 	VALUE_POLYNOMIAL,
 	VALUE_TF,
+	VALUE_NAN,
 
 	// Things to think about
 	VALUE_ARRAY,
@@ -420,6 +427,7 @@ typedef enum {
 } ValueType;
 
 typedef enum {
+	STATEMENT_DECL_ASSIGN,
 	STATEMENT_ASSIGN,
 	STATEMENT_EXPR,
 } StatementType;
@@ -434,6 +442,7 @@ typedef struct {
 		TF         tf;
 		double     number;
 		char       *str;
+		Array      array;
 	} value;
 } Value;
 
@@ -456,6 +465,12 @@ struct AST {
 		} statement;
 
 		Value literal;
+
+		struct   {
+			size_t size;
+			AST    *first;
+		} array;
+
 
 		struct   {
 			char   *fn_name;
@@ -521,6 +536,13 @@ Token *parser_eat(TokenType type, Parser *parser){
 	return NULL;
 }
 
+Token *parser_lookahed(Parser *parser){
+	if(parser->offset + 1 >= parser->num_tokens) return NULL;
+	Token *la = &parser->tokens[parser->offset + 1];
+	return la;
+}
+
+
 AST *ast_make_number(Arena *a, double number){
 	AST *expr = ast_alloc(a, AST_LITERAL);
 	expr->as.literal.value.number = number;
@@ -535,6 +557,12 @@ AST *ast_make_id(Arena *a, char *id){
 	return expr;
 }
 
+AST *ast_make_array(Arena *a){
+	AST *array = ast_alloc(a, AST_ARRAY);
+	array->as.array.first = NULL;
+	array->as.array.size  = 0;
+	return array;
+}
 
 AST *ast_make_fn_call(Arena *a, const char *fn_name){
 	AST *fn_call = ast_alloc(a, AST_FN_CALL);
@@ -564,7 +592,42 @@ AST *parse_expression(Arena *a, AST *parent, Parser *parser); // Forward declara
 AST *parse_term(Arena *a, AST *parent, Parser *parser);
 AST *parse_expo(Arena *a, AST *parent, Parser *parser);
 AST *parse_primary(Arena *a, AST *parent, Parser *parser);
+AST *parse_array(Arena *a, AST *parent, Parser *parser);
 
+
+AST *parse_array(Arena *a, AST *parent, Parser *parser){
+		if(parser_eat(TOK_LBRACKET, parser) == NULL) return NULL;
+		AST *array = ast_make_array(a);
+		if(!parser_done(parser) && parser_peek(parser)->type == TOK_RBRACKET){
+			if(parser_eat(TOK_RBRACKET, parser) == NULL) return NULL;
+			return array;
+		}
+
+		AST *head = parse_expression(a, parent, parser);
+		if(parser_peek(parser)->type == TOK_COMMA) parser_eat(TOK_COMMA, parser);
+
+		AST *tail = NULL;
+		if(head == NULL){
+			if(parser_eat(TOK_RBRACKET, parser) == NULL) return NULL;
+			return array;
+		}
+		array->as.array.first = head;
+		tail = head;
+
+		size_t size = 1;
+
+		while(!parser_done(parser) && parser_peek(parser)->type != TOK_RBRACKET){
+			AST *expr = parse_expression(a, parent, parser);
+			if(parser_peek(parser)->type == TOK_COMMA) parser_eat(TOK_COMMA, parser);
+			tail->next = expr;
+			tail       = expr;
+			size       += 1;
+		}
+
+		if(parser_eat(TOK_RBRACKET, parser) == NULL) return NULL;
+		array->as.array.size = size;
+		return array;
+}
 
 AST *parse_fn_call(Arena *a, AST *parent, Parser *parser, char* fn_name){
 		if(parser_eat(TOK_LPAREN, parser) == NULL) return NULL;
@@ -605,6 +668,10 @@ AST *parse_primary(Arena *a, AST *parent, Parser *parser) {
 		expr->parent = parent;
 		return expr;
 
+	} else if(current->type == TOK_LBRACKET)
+	{
+			AST *array = parse_array(a, parent, parser);
+			return array;
 	} else if(current->type == TOK_ID)
 	{
 		Token *id_tok = parser_eat(TOK_ID, parser);
@@ -683,17 +750,39 @@ AST *parse_statement(Arena *a, AST *parent, Parser *parser){
 	Token *current = parser_peek(parser);
 
 	if(current->type == TOK_KEYWORD && (strcmp(current->value, "let") == 0)){
-		AST *stmt     = ast_make_statement(a, STATEMENT_ASSIGN);
+		AST *stmt     = ast_make_statement(a, STATEMENT_DECL_ASSIGN);
 		stmt->parent  = parent;
 
 		if(parser_eat(TOK_KEYWORD, parser) == NULL) return NULL;
-
 		Token *id_tok = parser_eat(TOK_ID, parser);
 
 		if(id_tok == NULL){
 			return NULL;
 		}
 
+		if(parser_eat(TOK_EQ, parser) == NULL) return NULL;
+
+		stmt->as.statement.dst  = arena_alloc(a, strlen(id_tok->value) + 1);
+		strcpy(stmt->as.statement.dst, id_tok->value);
+
+		AST *expr               = parse_expression(a, stmt, parser);
+		stmt->as.statement.expr = expr;
+
+		return stmt;
+	}else if
+		(
+			current->type == TOK_ID  &&  
+			parser_lookahed(parser)  != NULL  &&
+			parser_lookahed(parser)->type  == TOK_EQ
+		)
+	{
+		AST *stmt    = ast_make_statement(a, STATEMENT_ASSIGN);
+		stmt->parent = parent;
+
+		Token *id_tok = parser_eat(TOK_ID, parser);
+		if(id_tok == NULL){
+			return NULL;
+		}
 		if(parser_eat(TOK_EQ, parser) == NULL) return NULL;
 
 		stmt->as.statement.dst  = arena_alloc(a, strlen(id_tok->value) + 1);
@@ -829,37 +918,6 @@ void ast_print(AST *ast, int level){
 	}
 }
 
-
-int parse_line(Arena *a, const char *line, AST *ast){
-	// Null-terminated
-
-  // --------- Basic commands -----------
-
-	if(strcmp(line, "q") == 0){
-		printf("\nExiting...\n");
-		exit(0);
-	}
-
-  // --------- Commands that require parsing -----------
-
-	Token  tokens[1024];
-	size_t num_tokens = 0;
-	int    err        = 0;
-	err = tokenize_line(a, line, strlen(line), tokens, &num_tokens);
-	if(err != 0){
-		fprintf(stderr, "Tokenization error\n");
-		return err;
-	}
-
-	err = parse_tokens(a, ast, tokens, num_tokens);
-	if(err != 0){
-		return err;
-	}
-
-	// if(err == 0) ast_print(ast, 0);
-	return 0;
-}
-
 //============================== 
 //
 //    Environment
@@ -867,9 +925,67 @@ int parse_line(Arena *a, const char *line, AST *ast){
 //============================== 
 
 typedef struct {
-	Value  *vars;
-	size_t num_vars;
+	char  *name;
+	Value *value;
+} Variable;
+
+typedef struct {
+	Variable *vars;
+	size_t   num_vars;
 } Enviromnent;
+
+Enviromnent env_create(Arena *a){
+	Enviromnent e;
+	e.vars     = arena_alloc(a, 32 * sizeof(Variable));
+	e.num_vars = 0;
+	return e;
+}
+
+int env_variable_idx(Arena *a, Enviromnent *e, const char* name){
+	for(int i = 0; i < e->num_vars; i++){
+		if(strcmp(name, e->vars[i].name) == 0) return i;
+	}
+	return -1;
+}
+
+Variable *env_get_variable_from_idx(Arena *a, Enviromnent *e, int idx){
+	if(idx < 0) return NULL;
+	if(idx >= e->num_vars) return NULL;
+	return &e->vars[idx];
+}
+
+
+void env_alloc_variable(Arena *a, Enviromnent *e, const char* name, Value *value){
+	Variable *var       = &e->vars[e->num_vars];
+
+	size_t name_len     = strlen(name);
+	var->name           = arena_alloc(a, name_len + 1);
+	strcpy(var->name, name);
+
+	var->value          = arena_alloc(a, sizeof(Value));
+	*var->value         = *value;
+
+	e->num_vars++;
+
+	// TODO: Implement reallocation
+}
+
+void env_set_variable(Arena *a, Enviromnent *e, const char* name, Value *value){
+	int idx =  env_variable_idx(a, e, name);
+	if(idx < 0){
+		env_alloc_variable(a, e, name, value);
+		return;
+	}
+
+	Variable *var       = &e->vars[idx];
+	*var->value         = *value;
+}
+
+void  env_list_variables(Arena* a, Enviromnent  *e){
+	for(size_t i = 0; i < e->num_vars; i++){
+		printf("%s\n", e->vars[i].name);
+	}
+}
 
 //============================== 
 //
@@ -885,9 +1001,42 @@ Value make_num(double num){
 	return v;
 }
 
+Value make_nan(){
+	Value v = {
+		.valueType    = VALUE_NAN,
+		.value.number = 0
+	};
+	return v;
+}
+
+Value resolve_variable(Arena *a, Enviromnent *e, Value *literal){
+		int idx = -1;
+		if((idx  = env_variable_idx(a, e, literal->value.str)) < 0){
+			// Variable  not  found
+			printf("Undefined variable %s\n", literal->value.str);
+			return make_nan();
+		}
+		Variable *var = env_get_variable_from_idx(a, e, idx);
+		return *var->value;
+}
+
 Value eval_expr(Arena *a, Enviromnent *e, AST *expr);
 
-Value eval_binop(Arena *a, Enviromnent *e, AST *op, Value *left, Value *right){
+Value eval_binop(Arena *a, Enviromnent *e, AST *op, Value *raw_left, Value *raw_right){
+
+	Value *left  = raw_left;
+	Value *right = raw_right;
+
+	// Resolve variables
+	// TODO: Check if it begins  in quotation  marks?  For  now, assume
+	//       all strings  are  variable  names
+	if(left->valueType == VALUE_STRING){
+		*left = resolve_variable(a, e, left);
+	}
+	if(right->valueType == VALUE_STRING){
+		*right = resolve_variable(a, e, right);
+	}
+
 	// Number op Number
 
 	if(left->valueType == VALUE_NUMBER && left->valueType == VALUE_NUMBER){
@@ -945,7 +1094,7 @@ Value eval_func_call(Arena *a, Enviromnent *e, AST *fn){
 
 }
 
-void print_value(Value *value){
+void print_value(Arena *a, Enviromnent *e, Value *value){
 	switch(value->valueType){
 		case VALUE_NUMBER:
 			{
@@ -954,7 +1103,36 @@ void print_value(Value *value){
 			}
 		case VALUE_STRING:
 			{
-				printf("%s\n", value->value.str);
+				Value resolved = resolve_variable(a, e, value);
+				if(resolved.valueType == VALUE_NAN){
+					printf("%s\n", value->value.str);
+				}else{
+					print_value(a, e, &resolved);
+				}
+				break;
+			}
+		case VALUE_ARRAY:
+			{
+				printf("[");
+				for(size_t i = 0; i < value->value.poly.num_coeffs; i++){
+					printf("%.2f", value->value.poly.coeffs[i]);
+					if(i < value->value.poly.num_coeffs - 1){
+						printf(", ");
+					}
+				}
+				printf("]\n");
+				break;
+			}
+		case VALUE_POLYNOMIAL:
+			{
+				printf("poly([");
+				for(size_t i = 0; i < value->value.poly.num_coeffs; i++){
+					printf("%.2f", value->value.poly.coeffs[i]);
+					if(i < value->value.poly.num_coeffs - 1){
+						printf(", ");
+					}
+				}
+				printf("])");
 				break;
 			}
 		default:
@@ -971,8 +1149,26 @@ Value eval_expr(Arena *a, Enviromnent *e, AST *expr){
 	switch(expr->type){
 		case AST_LITERAL:
 			{
-				value.valueType = expr->as.literal.valueType;
-				value.value = expr->as.literal.value;
+				Value *literal = &expr->as.literal;
+				if(literal->valueType == VALUE_STRING){
+					*literal = resolve_variable(a, e, literal);
+				}
+				value = *literal;
+				break;
+			}
+		case AST_ARRAY:
+			{
+				value.valueType = VALUE_ARRAY;
+				value.value.array.size = expr->as.array.size;
+				value.value.array.nums = arena_alloc(a, expr->as.array.size * sizeof(double));
+				AST *item              = expr->as.array.first;
+				size_t i               = 0;
+				while(item != NULL){
+					Value item_value = eval_expr(a, e, item);
+					// TODO: check if it really is a number
+					value.value.array.nums[i++] = item_value.value.number;
+					item                        = item->next;
+				}
 				break;
 			}
 		case AST_BINARY_OP:
@@ -989,7 +1185,7 @@ Value eval_expr(Arena *a, Enviromnent *e, AST *expr){
 			}
 		default:
 			{
-				fprintf(stderr, "Unreachable\n");
+				fprintf(stderr, "Unreachable [eval_expr]\n");
 				exit(1);
 			}
 	}
@@ -1001,7 +1197,35 @@ int eval_stmt(Arena *a, AST *ast, Enviromnent *e, AST *stmt){
 
 	if(stmt->as.statement.type == STATEMENT_EXPR){
 		Value result = eval_expr(a, e, stmt->as.statement.expr);
-		print_value(&result);
+		print_value(a, e, &result);
+		return 0;
+	}
+
+	if(stmt->as.statement.type == STATEMENT_DECL_ASSIGN){
+		char *dst = stmt->as.statement.dst;
+		// Check if it hasn't been defined before
+		if(env_variable_idx(a, e, dst)  >= 0){
+			printf("Variable %s has already been defined\n", dst);
+			return 1;
+		}
+
+		//  TODO: Check if it's not null
+		Value value = eval_expr(a, e, stmt->as.statement.expr);
+		env_set_variable(a, e, dst, &value);
+		return 0;
+	}
+
+	if(stmt->as.statement.type == STATEMENT_ASSIGN){
+		char *dst = stmt->as.statement.dst;
+		// Check if it has been defined before
+		if(env_variable_idx(a, e, dst)  < 0){
+			printf("Undefined variable %s\n", dst);
+			return 1;
+		}
+
+		//  TODO: Check if it's not null
+		Value value = eval_expr(a, e, stmt->as.statement.expr);
+		env_set_variable(a, e, dst, &value);
 		return 0;
 	}
 
@@ -1022,6 +1246,45 @@ int run_ast(Arena *a, AST *ast, Enviromnent *e){
 }
 
 
+int parse_line(Arena *a, Enviromnent *e,  const char *line, AST *ast, int *done){
+	// Null-terminated
+
+  // --------- Basic commands -----------
+
+	if(strcmp(line, "q") == 0){
+		printf("\nExiting...\n");
+		*done = 1;
+		exit(0);
+	}
+
+	if(strcmp(line, "ls") == 0){
+		env_list_variables(a, e);
+		*done = 1;
+		return 0;
+	}
+
+  // --------- Commands that require parsing -----------
+
+	Token  tokens[1024];
+	size_t num_tokens = 0;
+	int    err        = 0;
+	err = tokenize_line(a, line, strlen(line), tokens, &num_tokens);
+	if(err != 0){
+		fprintf(stderr, "Tokenization error\n");
+		return err;
+	}
+
+	err = parse_tokens(a, ast, tokens, num_tokens);
+	if(err != 0){
+		return err;
+	}
+
+	// if(err == 0) ast_print(ast, 0);
+	return 0;
+}
+
+
+
 //============================== 
 //
 //    Main
@@ -1035,9 +1298,11 @@ int main(){
 	ssize_t last_good = 0;
 	int parse_code    = 0;
 
-	Arena temp_arena = arena_create(1024 * 1024);      // 1 MB for now
-	Arena a          = arena_create(32 * 1024 * 1024); // 32 MB for now
-	Enviromnent e = {0};
+	Arena temp_arena  = arena_create(1024 * 1024);      // 1 MB for now
+	Arena a           = arena_create(32 * 1024 * 1024); // 32 MB for now
+	Enviromnent e     = env_create(&a);
+
+	int skip_ast_run  = 0;
 
 	// const char *line = "let p = (((poly() + sqr(3) + (5))))";
 	// parse_line(&a, line);
@@ -1052,13 +1317,15 @@ int main(){
 	 	}
 
 	 	// Trimming the endline characters
-	 	last_good = strcspn(buffer, "\r\n");
+	 	last_good         = strcspn(buffer, "\r\n");
 	 	buffer[last_good] = '\0';
 
+		skip_ast_run      = 0;
+
 		SCRATCH_SCOPE(&temp_arena){
-			AST *ast = arena_alloc(&temp_arena, sizeof(AST));
-			parse_code = parse_line(&temp_arena, buffer, ast);
-			run_ast(&a, ast, &e);
+			AST *ast   = arena_alloc(&temp_arena, sizeof(AST));
+			parse_code = parse_line(&temp_arena, &e,  buffer, ast, &skip_ast_run);
+			if(!skip_ast_run) run_ast(&a, ast, &e);
 		}
 	 	if(parse_code != 0){
 	 		printf("Exiting with code %i...\n", parse_code);
