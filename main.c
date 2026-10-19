@@ -885,6 +885,7 @@ Value make_num(double num){
 	return v;
 }
 
+Value eval_expr(Arena *a, Enviromnent *e, AST *expr);
 
 Value eval_binop(Arena *a, Enviromnent *e, AST *op, Value *left, Value *right){
 	// Number op Number
@@ -925,6 +926,25 @@ Value eval_binop(Arena *a, Enviromnent *e, AST *op, Value *left, Value *right){
 
 }
 
+Value eval_func_call(Arena *a, Enviromnent *e, AST *fn){
+
+	if(fn->as.fn_call.num_arguments == 1 || 1){
+		// Basic math on numbers
+		Value val = eval_expr(a, e, fn->as.fn_call.first_arg);
+
+		if(strcmp(fn->as.fn_call.fn_name, "log") == 0)  { return make_num(logf(val.value.number));}
+		if(strcmp(fn->as.fn_call.fn_name, "exp") == 0)  { return make_num(expf(val.value.number));}
+		if(strcmp(fn->as.fn_call.fn_name, "sin") == 0)  { return make_num(sinf(val.value.number));}
+		if(strcmp(fn->as.fn_call.fn_name, "cos") == 0)  { return make_num(cosf(val.value.number));}
+		if(strcmp(fn->as.fn_call.fn_name, "sqr") == 0)  { return make_num(val.value.number * val.value.number);}
+		if(strcmp(fn->as.fn_call.fn_name, "sqrt") == 0) { return make_num(sqrtf(val.value.number));}
+
+	}
+	
+	return make_num(0);
+
+}
+
 void print_value(Value *value){
 	switch(value->valueType){
 		case VALUE_NUMBER:
@@ -948,17 +968,32 @@ void print_value(Value *value){
 Value eval_expr(Arena *a, Enviromnent *e, AST *expr){
 	Value value = {0};
 
-	if(expr->type == AST_LITERAL){
-		value.valueType = expr->as.literal.valueType;
-		value.value = expr->as.literal.value;
+	switch(expr->type){
+		case AST_LITERAL:
+			{
+				value.valueType = expr->as.literal.valueType;
+				value.value = expr->as.literal.value;
+				break;
+			}
+		case AST_BINARY_OP:
+			{
+				Value left  = eval_expr(a,  e, expr->as.binop.left);
+				Value right = eval_expr(a,  e, expr->as.binop.right);
+				value       = eval_binop(a, e, expr, &left, &right);
+				break;
+			}
+		case AST_FN_CALL:
+			{
+				value       = eval_func_call(a, e, expr);
+				break;
+			}
+		default:
+			{
+				fprintf(stderr, "Unreachable\n");
+				exit(1);
+			}
 	}
 
-	if(expr->type == AST_BINARY_OP){
-		Value left   = eval_expr(a,  e, expr->as.binop.left);
-		Value right  = eval_expr(a,  e, expr->as.binop.right);
-		Value result = eval_binop(a, e, expr, &left, &right);
-		return result;
-	}
 	return value;
 }
 
