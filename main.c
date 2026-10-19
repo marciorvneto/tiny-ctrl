@@ -8,6 +8,7 @@
 #define ALIGNMENT 16 	// Might change that in the future
 #define ALIGN_ALLOC(offset, align) ((offset + ((align) - 1)) & (~((align) - 1))) // Alignment trick
 
+#define UNREACHABLE(x) do { fprintf(stderr, "Unreachable: " x); exit(1); } while(0);
 
 //============================== 
 //
@@ -201,7 +202,7 @@ typedef struct {
 size_t tokenizer_is_id(const char *pos){
 	if(!isalpha(pos[0])) return 0;
 	size_t i = 1;
-	while(isalpha(pos[i])){
+	while(isalnum(pos[i])){
 		i += 1;
 	}
 	return i;
@@ -403,12 +404,51 @@ int tokenize_line(Arena *a, const char *line, size_t n, Token *tokens , size_t *
 	      X(AST_ARGS_LIST)         \
 	      X(AST_NODE_TYPE_COUNT)
 				
-
 typedef enum {
 #define X(name) name,
 	AST_NODES_LIST
 #undef X
 } ASTNodeType;
+
+
+#define OP_TYPE_LIST           \
+	      X(OP_PLUS)           \
+	      X(OP_MINUS)           \
+	      X(OP_MUL)           \
+	      X(OP_DIV)           \
+	      X(OP_POW)           \
+	      X(OP_MMUL)           \
+	      X(OP_TYPE_LIST_COUNT)
+
+typedef enum {
+#define X(name) name,
+	OP_TYPE_LIST
+#undef X
+} OpType;
+
+void op_type_repr(OpType type, char *buf){
+	int repr_size = 0;
+	switch(type){
+#define X(name) case name: { repr_size = sprintf(buf, #name); break;}
+#define V(name) case name: { repr_size = sprintf(buf, #name); break;}
+		OP_TYPE_LIST
+#undef X
+#undef V
+	}
+	buf[repr_size] = '\0';
+}
+
+OpType op_from_tok(TokenType type){
+	switch (type) {
+		case TOK_PLUS:  return OP_PLUS;
+	  case TOK_MINUS: return OP_MINUS;
+	  case TOK_MUL:   return OP_MUL;
+	  case TOK_DIV:   return OP_DIV;
+	  case TOK_POW:   return OP_POW;
+	  case TOK_AT:    return OP_MMUL;
+		default:        UNREACHABLE("op_from_tok");
+	}
+}
 
 // Expression value types
 
@@ -479,9 +519,9 @@ struct AST {
 		} fn_call;
 
 		struct {
-			TokenType op;
-			AST       *left;
-			AST       *right;
+			OpType op;
+			AST    *left;
+			AST    *right;
 		} binop;
 	} as;
 };
@@ -573,7 +613,7 @@ AST *ast_make_fn_call(Arena *a, const char *fn_name){
 	return fn_call;
 }
 
-AST *ast_make_binop(Arena *a, TokenType op){
+AST *ast_make_binop(Arena *a, OpType op){
 	AST *binop = ast_alloc(a, AST_BINARY_OP); 
 	binop->as.binop.left = NULL;
 	binop->as.binop.right = NULL;
@@ -705,7 +745,7 @@ AST *parse_term(Arena *a, AST *parent, Parser *parser){
 		)
 	{
 		Token *op_tok         = parser_eat(parser_peek(parser)->type, parser);
-		AST   *binop          = ast_make_binop(a, op_tok->type);
+		AST   *binop          = ast_make_binop(a, op_from_tok(op_tok->type));
 		AST   *right          = parse_expo(a, parent, parser);
 		binop->as.binop.left  = left;
 		binop->as.binop.right = right;
@@ -718,7 +758,7 @@ AST *parse_expo(Arena *a, AST *parent, Parser *parser){
 	AST *primary = parse_primary(a, parent, parser);
 	if(!parser_done(parser) && parser_peek(parser)->type == TOK_POW){
 		Token *op_tok         = parser_eat(parser_peek(parser)->type, parser);
-		AST   *binop          = ast_make_binop(a, op_tok->type);
+		AST   *binop          = ast_make_binop(a, op_from_tok(op_tok->type));
 		AST   *right          = parse_expo(a, parent, parser);
 		binop->as.binop.left  = primary;
 		binop->as.binop.right = right;
@@ -735,7 +775,7 @@ AST *parse_expression(Arena *a, AST *parent, Parser *parser){
 		)
 	{
 		Token *op_tok         = parser_eat(parser_peek(parser)->type, parser);
-		AST   *binop          = ast_make_binop(a, op_tok->type);
+		AST   *binop          = ast_make_binop(a, op_from_tok(op_tok->type));
 		AST   *right          = parse_term(a, parent, parser);
 		binop->as.binop.left  = left;
 		binop->as.binop.right = right;
@@ -905,7 +945,7 @@ void ast_print(AST *ast, int level){
 		case AST_BINARY_OP:
 			{
 				char opBuf[128];
-				token_type_repr(ast->as.binop.op, opBuf);
+				op_type_repr(ast->as.binop.op, opBuf);
 				printf("%sBINOP[%s]:\n", buf, opBuf);
 				fill_indent(level + 1, buf);
 				printf("%sLEFT:\n", buf);
@@ -993,10 +1033,26 @@ void  env_list_variables(Arena* a, Enviromnent  *e){
 //
 //============================== 
 
+typedef Value (*BinaryFn)(Value *left, Value *right);
+
 Value make_num(double num){
 	Value v = {
 		.valueType    = VALUE_NUMBER,
 		.value.number = num
+	};
+	return v;
+}
+Value make_array(Array arr){
+	Value v = {
+		.valueType   = VALUE_ARRAY,
+		.value.array = arr
+	};
+	return v;
+}
+Value make_poly(Polynomial poly){
+	Value v = {
+		.valueType  = VALUE_POLYNOMIAL,
+		.value.poly = poly
 	};
 	return v;
 }
@@ -1008,6 +1064,149 @@ Value make_nan(){
 	};
 	return v;
 }
+
+Value op_with_nan(Value *left, Value *right){
+	return make_nan();
+}
+Value add_num_num(Value *left, Value *right){
+		return make_num(left->value.number + right->value.number);
+}
+Value sub_num_num(Value *left, Value *right){
+		return make_num(left->value.number - right->value.number);
+}
+Value mul_num_num(Value *left, Value *right){
+		return make_num(left->value.number * right->value.number);
+}
+Value div_num_num(Value *left, Value *right){
+		return make_num(left->value.number / right->value.number);
+}
+Value pow_num_num(Value *left, Value *right){
+		return make_num(powf(left->value.number, right->value.number));
+}
+
+Value add_num_array(Value *left, Value *right){
+		double num = left->valueType == VALUE_NUMBER ? left->value.number : right->value.number;
+		Array  arr = left->valueType == VALUE_ARRAY ? left->value.array : right->value.array;
+		for(size_t i = 0; i < arr.size; i++){
+			arr.nums[i] += num;
+		}
+		return make_array(arr);
+}
+Value add_array_array(Value *left, Value *right){
+		Array arr1 = left->value.array;
+		Array arr2 = right->value.array;
+		if(arr1.size != arr2.size){
+			printf("Incompatible array sizes: %zu and %zu\n", arr1.size, arr2.size);
+			return make_nan();
+		}
+		for(size_t i = 0; i < arr1.size; i++){
+			arr1.nums[i] += arr2.nums[i];
+		}
+		return make_array(arr1);
+}
+Value sub_num_array(Value *left, Value *right){
+		double num         = left->valueType == VALUE_NUMBER ? left->value.number : right->value.number;
+		Array  arr         = left->valueType == VALUE_ARRAY ? left->value.array : right->value.array;
+		double left_is_num = left->valueType == VALUE_NUMBER;
+		for(size_t i = 0; i < arr.size; i++){
+			if(left_is_num){
+				arr.nums[i] = num - arr.nums[i];
+			}else{
+				arr.nums[i] = arr.nums[i] - num;
+			}
+		}
+		return make_array(arr);
+}
+Value sub_array_array(Value *left, Value *right){
+		Array arr1 = left->value.array;
+		Array arr2 = right->value.array;
+		if(arr1.size != arr2.size){
+			printf("Incompatible array sizes: %zu and %zu\n", arr1.size, arr2.size);
+			return make_nan();
+		}
+		for(size_t i = 0; i < arr1.size; i++){
+			arr1.nums[i] -= arr2.nums[i];
+		}
+		return make_array(arr1);
+}
+
+
+static const BinaryFn binop_dispatch[OP_TYPE_LIST_COUNT][VALUE_TYPE_COUNT][VALUE_TYPE_COUNT] = {
+	[OP_PLUS] = {
+		[VALUE_NUMBER] = {
+			[VALUE_NUMBER] = add_num_num,
+			[VALUE_ARRAY] = add_num_array,
+			[VALUE_NAN] = op_with_nan,
+		},
+		[VALUE_ARRAY] = {
+			[VALUE_NUMBER] = add_num_array,
+			[VALUE_ARRAY] = add_array_array,
+			[VALUE_NAN] = op_with_nan,
+		},
+		[VALUE_NAN] = {
+			[VALUE_NUMBER] = op_with_nan,
+			[VALUE_ARRAY] = op_with_nan,
+			[VALUE_NAN] = op_with_nan,
+		}
+	},
+
+	[OP_MINUS] = {
+		[VALUE_NUMBER] = {
+			[VALUE_NUMBER] = sub_num_num,
+			[VALUE_ARRAY] = sub_num_array,
+			[VALUE_NAN] = op_with_nan,
+		},
+		[VALUE_ARRAY] = {
+			[VALUE_NUMBER] = sub_num_array,
+			[VALUE_ARRAY] = sub_array_array,
+			[VALUE_NAN] = op_with_nan,
+		},
+		[VALUE_NAN] = {
+			[VALUE_NUMBER] = op_with_nan,
+			[VALUE_ARRAY] = op_with_nan,
+			[VALUE_NAN] = op_with_nan,
+		}
+	},
+
+	[OP_MUL] = {
+		[VALUE_NUMBER] = {
+			[VALUE_NUMBER] = mul_num_num,
+			[VALUE_NAN] = op_with_nan,
+		},
+		[VALUE_NAN] = {
+			[VALUE_NUMBER] = op_with_nan,
+			[VALUE_ARRAY] = op_with_nan,
+			[VALUE_NAN] = op_with_nan,
+		}
+	},
+
+	[OP_DIV] = {
+		[VALUE_NUMBER] = {
+			[VALUE_NUMBER] = div_num_num,
+			[VALUE_NAN] = op_with_nan,
+		},
+		[VALUE_NAN] = {
+			[VALUE_NUMBER] = op_with_nan,
+			[VALUE_ARRAY] = op_with_nan,
+			[VALUE_NAN] = op_with_nan,
+		} 
+	},
+
+	[OP_POW] = {
+		[VALUE_NUMBER] = {
+			[VALUE_NUMBER] = pow_num_num,
+			[VALUE_ARRAY] = op_with_nan,
+			[VALUE_NAN] = op_with_nan,
+		},
+		[VALUE_NAN] = {
+			[VALUE_NUMBER] = op_with_nan,
+			[VALUE_ARRAY] = op_with_nan,
+			[VALUE_NAN] = op_with_nan,
+		} 
+	},
+};
+
+
 
 Value resolve_variable(Arena *a, Enviromnent *e, Value *literal){
 		int idx = -1;
@@ -1037,38 +1236,23 @@ Value eval_binop(Arena *a, Enviromnent *e, AST *op, Value *raw_left, Value *raw_
 		*right = resolve_variable(a, e, right);
 	}
 
-	// Number op Number
-
-	if(left->valueType == VALUE_NUMBER && left->valueType == VALUE_NUMBER){
-
-		switch(op->as.binop.op){
-			case TOK_PLUS:
-				{
-					return make_num(left->value.number + right->value.number);
-				}
-			case TOK_MINUS:
-				{
-					return make_num(left->value.number - right->value.number);
-				}
-			case TOK_MUL:
-				{
-					return make_num(left->value.number * right->value.number);
-				}
-			case TOK_DIV:
-				{
-					return make_num(left->value.number / right->value.number);
-				}
-			case TOK_POW:
-				{
-					return make_num(powf(left->value.number, right->value.number));
-				}
-			default:
-				{
-					fprintf(stderr, "Unreachable\n");
-					exit(1);
-				}
-		}
+	if( op->as.binop.op >= OP_TYPE_LIST_COUNT ||
+			left->valueType >= VALUE_TYPE_COUNT  ||
+			right->valueType >= VALUE_TYPE_COUNT
+			)
+	{
+		return make_nan();
 	}
+
+	BinaryFn fn = binop_dispatch[op->as.binop.op][left->valueType][right->valueType];
+
+	if(!fn){
+		printf("Unsupported operation!\n");
+		return make_nan();
+	}
+
+	return fn(left, right);
+
 
 	fprintf(stderr, "Expected 2 numbers, got something else!\n");
 	exit(1);
@@ -1088,10 +1272,18 @@ Value eval_func_call(Arena *a, Enviromnent *e, AST *fn){
 		if(strcmp(fn->as.fn_call.fn_name, "sqr") == 0)  { return make_num(val.value.number * val.value.number);}
 		if(strcmp(fn->as.fn_call.fn_name, "sqrt") == 0) { return make_num(sqrtf(val.value.number));}
 
-	}
-	
-	return make_num(0);
 
+		if(strcmp(fn->as.fn_call.fn_name, "poly") == 0) {
+			if(val.valueType == VALUE_ARRAY){
+				return make_poly(val.value.poly);
+			}
+			printf("Unsupported operation!\n");
+			return make_nan();
+
+		}
+
+	}
+	return make_nan();
 }
 
 void print_value(Arena *a, Enviromnent *e, Value *value){
@@ -1132,7 +1324,7 @@ void print_value(Arena *a, Enviromnent *e, Value *value){
 						printf(", ");
 					}
 				}
-				printf("])");
+				printf("])\n");
 				break;
 			}
 		default:
@@ -1158,7 +1350,7 @@ Value eval_expr(Arena *a, Enviromnent *e, AST *expr){
 			}
 		case AST_ARRAY:
 			{
-				value.valueType = VALUE_ARRAY;
+				value.valueType        = VALUE_ARRAY;
 				value.value.array.size = expr->as.array.size;
 				value.value.array.nums = arena_alloc(a, expr->as.array.size * sizeof(double));
 				AST *item              = expr->as.array.first;
@@ -1251,6 +1443,12 @@ int parse_line(Arena *a, Enviromnent *e,  const char *line, AST *ast, int *done)
 
   // --------- Basic commands -----------
 
+	if(strcmp(line, "") == 0){
+		// Just a blank line
+		*done = 1;
+		return 0;
+	}
+
 	if(strcmp(line, "q") == 0){
 		printf("\nExiting...\n");
 		*done = 1;
@@ -1283,7 +1481,29 @@ int parse_line(Arena *a, Enviromnent *e,  const char *line, AST *ast, int *done)
 	return 0;
 }
 
+//============================== 
+//
+//    Helpers
+//
+//============================== 
 
+size_t trim_end(char *str){
+	// Ex:       this is a string      \0
+	// Produces: this is a string\0
+	// Assumes string to be null-terminated
+	// Mutates the string in-place
+
+	size_t size = strlen(str);
+	for(int i = size - 1; i >= 0; i--){
+		if(isspace(str[i])){
+			str[i] = '\0';
+		}else{
+			break;
+		}
+	}
+
+	return strlen(str);
+}
 
 //============================== 
 //
@@ -1319,6 +1539,8 @@ int main(){
 	 	// Trimming the endline characters
 	 	last_good         = strcspn(buffer, "\r\n");
 	 	buffer[last_good] = '\0';
+
+		trim_end(buffer);
 
 		skip_ast_run      = 0;
 
