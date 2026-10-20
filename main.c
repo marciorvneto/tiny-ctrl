@@ -79,21 +79,25 @@ typedef struct {
 	size_t  deg;
 } Polynomial;
 
-void poly_repr(Arena *a, Polynomial *p, char* buf){
+int poly_repr(Arena *a, Polynomial *p, char* buf, char* variable){
 	int printed = 0;
+  if(variable == NULL){
+    variable = "x";
+  }
 	for(size_t i = 0; i < p->num_coeffs; i++){
 		double coef = p->coeffs[i];
 		if(coef == 0) continue;
 		if(i > 1){
-			printed += sprintf(buf + printed, "%.2e x^%zu", coef, i);
+			printed += sprintf(buf + printed, "%.2e %s^%zu", coef, variable, i);
 		}else if(i == 1){
-			printed += sprintf(buf + printed, "%.2e x", coef);
+			printed += sprintf(buf + printed, "%.2e %s", coef, variable);
 		}else{
 			printed += sprintf(buf + printed, "%.2e", coef);
 		}
 		if(i < p->num_coeffs - 1) printed += sprintf(buf + printed, " + ");
 	}
 	buf[printed] = '\0';
+  return printed;
 }
 
 // Example: 3x2 - 5x + 1:
@@ -103,7 +107,40 @@ void poly_repr(Arena *a, Polynomial *p, char* buf){
 typedef struct {
 	Polynomial num;
 	Polynomial den;
-} TF;
+} TransferFunction;
+
+int transfer_function_repr(Arena *a, TransferFunction *tf, char* buf, char* variable){
+  char num_buf[1024];
+  char den_buf[1024];
+  int num_size = poly_repr(a, &tf->num, num_buf, variable);
+  int den_size = poly_repr(a, &tf->den, den_buf, variable);
+
+  int max_size     = MAX(num_size, den_size);
+  int num_dashes   = max_size;
+  int padding_num  = (int)((max_size - num_size)/2);
+  int padding_den  = (int)((max_size - den_size)/2);
+  int apply_to_num = max_size == num_size ? 0 : 1;
+
+  char padding_buf[1024] = {0};
+  char dashes[1024]      = {0};
+  for(int i = 0; i < MAX(padding_num, padding_den); i++){
+    padding_buf[i] = ' ';
+  }
+  for(int i = 0; i < max_size; i++){
+    dashes[i] = '-';
+  }
+
+  size_t printed = 0;
+
+  printed += sprintf(buf + printed, "%s%s\n", apply_to_num ? padding_buf : "", num_buf);
+  printed += sprintf(buf + printed, "%s\n", dashes);
+  printed += sprintf(buf + printed, "%s%s", apply_to_num ? "" : padding_buf, den_buf);
+
+  buf[printed] = '\0';
+  return printed;
+
+}
+
 
 
 //============================== 
@@ -444,7 +481,7 @@ typedef enum {
 	VALUE_NUMBER,
 	VALUE_STRING,
 	VALUE_POLYNOMIAL,
-	VALUE_TF,
+	VALUE_TRANSFER_FUNCTION,
 	VALUE_NAN,
 
 	// Things to think about
@@ -466,7 +503,7 @@ typedef struct {
 	ValueType valueType;
 	union {
 		Polynomial poly;
-		TF         tf;
+		TransferFunction         tf;
 		double     number;
 		char       *str;
 		Array      array;
@@ -1020,7 +1057,6 @@ void  env_list_variables(Arena* a, Enviromnent  *e){
 //
 //============================== 
 
-typedef Value (*BinaryFn)(Arena *a, Value *left, Value *right);
 
 Value make_num(double num){
 	Value v = {
@@ -1035,6 +1071,50 @@ Value make_array(Array arr){
 		.value.array = arr
 	};
 	return v;
+}
+
+Array clone_array(Arena *a, Array *old){
+  Array arr;
+  arr.size = old->size;
+  arr.nums = arena_alloc(a, arr.size * sizeof(double));
+  memcpy(arr.nums, old->nums, arr.size * sizeof(double));
+  return arr;
+}
+
+Polynomial clone_poly(Arena *a, Polynomial *p){
+  Polynomial poly;
+  poly.num_coeffs = p->num_coeffs;
+  poly.deg        = p->deg;
+  poly.coeffs     = arena_alloc(a, poly.num_coeffs * sizeof(double));
+  memcpy(poly.coeffs, p->coeffs, poly.num_coeffs * sizeof(double));
+  return poly;
+}
+
+
+Value value_clone(Arena *a, Value *v){
+  Value copy = *v;
+  switch(v->valueType){
+    case VALUE_ARRAY: 
+      {
+        copy.value.array = clone_array(a, &v->value.array);
+        break;
+      }
+    case VALUE_POLYNOMIAL: 
+      {
+        copy.value.poly = clone_poly(a, &v->value.poly);
+        break;
+      }
+    case VALUE_TRANSFER_FUNCTION: 
+      {
+        Polynomial num = clone_poly(a, &v->value.tf.num);
+        Polynomial den = clone_poly(a, &v->value.tf.num);
+        copy.value.tf.num = num;
+        copy.value.tf.den = den;
+        break;
+      }
+    default: break;
+  }
+  return copy;
 }
 
 Polynomial poly_new(Arena *a, double *src_coeffs, size_t num_coeffs){
@@ -1057,6 +1137,15 @@ Value make_poly(Polynomial poly){
 	return v;
 }
 
+Value make_transfer_function(TransferFunction tf){
+	Value v = {
+		.valueType = VALUE_TRANSFER_FUNCTION,
+		.value.tf  = tf
+	};
+	return v;
+}
+
+
 
 
 Value make_nan(){
@@ -1066,6 +1155,9 @@ Value make_nan(){
 	};
 	return v;
 }
+
+typedef Value (*BinaryFn)(Arena *a, Value *left, Value *right);
+
 
 Value op_with_nan(Arena *a, Value *left, Value *right){
 	return make_nan();
@@ -1089,11 +1181,15 @@ Value pow_num_num(Arena *a, Value *left, Value *right){
 Value add_num_array(Arena *a, Value *left, Value *right){
 		double num = left->valueType == VALUE_NUMBER ? left->value.number : right->value.number;
 		Array  arr = left->valueType == VALUE_ARRAY ? left->value.array : right->value.array;
+
+    Array new_arr = clone_array(a, &arr);
+
 		for(size_t i = 0; i < arr.size; i++){
-			arr.nums[i] += num;
+			new_arr.nums[i] += num;
 		}
-		return make_array(arr);
+		return make_array(new_arr);
 }
+
 Value add_array_array(Arena *a, Value *left, Value *right){
 		Array arr1 = left->value.array;
 		Array arr2 = right->value.array;
@@ -1101,23 +1197,26 @@ Value add_array_array(Arena *a, Value *left, Value *right){
 			printf("Incompatible array sizes: %zu and %zu\n", arr1.size, arr2.size);
 			return make_nan();
 		}
+    Array new_arr = clone_array(a, &arr1);
 		for(size_t i = 0; i < arr1.size; i++){
-			arr1.nums[i] += arr2.nums[i];
+			new_arr.nums[i] = arr1.nums[i] + arr2.nums[i];
 		}
-		return make_array(arr1);
+		return make_array(new_arr);
 }
 Value sub_num_array(Arena *a, Value *left, Value *right){
 		double num         = left->valueType == VALUE_NUMBER ? left->value.number : right->value.number;
 		Array  arr         = left->valueType == VALUE_ARRAY ? left->value.array : right->value.array;
 		double left_is_num = left->valueType == VALUE_NUMBER;
+
+    Array new_arr      = clone_array(a, &arr);
 		for(size_t i = 0; i < arr.size; i++){
 			if(left_is_num){
-				arr.nums[i] = num - arr.nums[i];
+				new_arr.nums[i] = num - arr.nums[i];
 			}else{
-				arr.nums[i] = arr.nums[i] - num;
+				new_arr.nums[i] = arr.nums[i] - num;
 			}
 		}
-		return make_array(arr);
+		return make_array(new_arr);
 }
 Value sub_array_array(Arena *a, Value *left, Value *right){
 		Array arr1 = left->value.array;
@@ -1137,8 +1236,14 @@ Value sub_array_array(Arena *a, Value *left, Value *right){
 Value add_num_poly(Arena *a, Value *left, Value *right){
 		double num       = left->valueType == VALUE_NUMBER ? left->value.number : right->value.number;
 		Polynomial  poly = left->valueType == VALUE_POLYNOMIAL ? left->value.poly : right->value.poly;
-		poly.coeffs[0] += num;
-		return make_poly(poly);
+		Polynomial pnew;
+		pnew.num_coeffs = poly.num_coeffs;
+		pnew.deg        = poly.deg;
+		pnew.coeffs     = arena_alloc(a, poly.num_coeffs * sizeof(double));
+
+    memcpy(pnew.coeffs, poly.coeffs, poly.num_coeffs * sizeof(double));
+		pnew.coeffs[0] += num;
+		return make_poly(pnew);
 }
 
 Value add_poly_poly(Arena *a, Value *left, Value *right){
@@ -1163,12 +1268,15 @@ Value add_poly_poly(Arena *a, Value *left, Value *right){
 }
 
 Value sub_num_poly(Arena *a, Value *left, Value *right){
-		double num         = left->valueType == VALUE_NUMBER ? left->value.number : right->value.number;
-		Polynomial  poly   = left->valueType == VALUE_POLYNOMIAL ? left->value.poly : right->value.poly;
-		double left_is_num = left->valueType == VALUE_NUMBER;
-		if(left_is_num) poly.coeffs[0] = num - poly.coeffs[0];
-		else poly.coeffs[0] -= num;
-		return make_poly(poly);
+		double num          = left->valueType == VALUE_NUMBER ? left->value.number : right->value.number;
+		Polynomial  poly    = left->valueType == VALUE_POLYNOMIAL ? left->value.poly : right->value.poly;
+		double left_is_num  = left->valueType == VALUE_NUMBER;
+
+    Polynomial new_poly = clone_poly(a, &poly);
+
+		if(left_is_num) new_poly.coeffs[0] = num - poly.coeffs[0];
+		else new_poly.coeffs[0] -= num;
+		return make_poly(new_poly);
 }
 
 
@@ -1214,6 +1322,117 @@ Value mul_poly_poly(Arena *a, Value *left, Value *right){
 		return make_poly(pnew);
 }
 
+Value mul_num_poly(Arena *a, Value *left, Value *right){
+		Polynomial p = left->valueType == VALUE_POLYNOMIAL ? left->value.poly : right->value.poly;
+		double num   = left->valueType == VALUE_NUMBER ? left->value.number : right->value.number;
+
+		Polynomial pnew;
+		pnew.num_coeffs = p.num_coeffs;
+		pnew.deg        = p.deg;
+		pnew.coeffs     = arena_alloc(a, p.num_coeffs * sizeof(double));
+
+		for(size_t i = 0; i < p.num_coeffs; i++){
+      pnew.coeffs[i] = p.coeffs[i] * num;
+		}
+    
+		return make_poly(pnew);
+}
+
+
+Value div_poly_poly(Arena *a, Value *left, Value *right){
+		Polynomial p1 = left->value.poly;
+		Polynomial p2 = right->value.poly;
+
+		TransferFunction tf;
+    tf.num = p1;
+    tf.den = p2;
+    
+		return make_transfer_function(tf);
+}
+
+
+Value ordered_div_num_poly(Arena *a, Value *left, Value *right){
+		double num   = left->value.number;
+    Polynomial p = right->value.poly; 
+
+		Polynomial pnew;
+		pnew.num_coeffs = 1;
+		pnew.deg        = 0;
+		pnew.coeffs     = arena_alloc(a, p.num_coeffs * sizeof(double));
+    pnew.coeffs[0]  = num;
+
+    TransferFunction tf = {
+      .num = pnew,
+      .den = p
+    };
+
+		return make_transfer_function(tf);
+}
+
+Value ordered_div_poly_num(Arena *a, Value *left, Value *right){
+		Polynomial p = left->valueType == VALUE_POLYNOMIAL ? left->value.poly : right->value.poly;
+		double num   = left->valueType == VALUE_NUMBER ? left->value.number : right->value.number;
+
+    Value poly_value = make_poly(p);
+    Value inv_num    = make_num(1.0/num);
+
+    return mul_num_poly(a, &inv_num, &poly_value);
+}
+
+
+// ------------- Transfer Functions --------------------
+
+Value add_tf_tf(Arena *a, Value *left, Value *right){
+    TransferFunction tf1 = left->value.tf;
+    TransferFunction tf2 = right->value.tf;
+
+    // A     C
+    // -  +  -
+    // B     D
+
+    Value A = make_poly(tf1.num);
+    Value B = make_poly(tf1.den);
+    Value C = make_poly(tf2.num);
+    Value D = make_poly(tf2.den);
+
+    Value AD = mul_poly_poly(a, &A, &D);
+    Value BC = mul_poly_poly(a, &B, &C);
+    Value BD = mul_poly_poly(a, &B, &D);
+
+    Value AD_BC = add_poly_poly(a, &AD, &BC);
+
+    TransferFunction tf = {
+      .num = AD_BC.value.poly,
+      .den = BD.value.poly
+    };
+
+    return make_transfer_function(tf);
+}
+
+Value mul_tf_tf(Arena *a, Value *left, Value *right){
+    TransferFunction tf1 = left->value.tf;
+    TransferFunction tf2 = right->value.tf;
+
+    // A     C
+    // -  *  -
+    // B     D
+
+    Value A = make_poly(tf1.num);
+    Value B = make_poly(tf1.den);
+    Value C = make_poly(tf2.num);
+    Value D = make_poly(tf2.den);
+
+    Value AC = mul_poly_poly(a, &A, &C);
+    Value BD = mul_poly_poly(a, &B, &D);
+
+    TransferFunction tf = {
+      .num = AC.value.poly,
+      .den = BD.value.poly
+    };
+
+    return make_transfer_function(tf);
+}
+
 
 static const BinaryFn binop_dispatch[OP_TYPE_LIST_COUNT][VALUE_TYPE_COUNT][VALUE_TYPE_COUNT] = {
 	[OP_PLUS] = {
@@ -1235,6 +1454,9 @@ static const BinaryFn binop_dispatch[OP_TYPE_LIST_COUNT][VALUE_TYPE_COUNT][VALUE
 			[VALUE_POLYNOMIAL] = add_poly_poly,
 			[VALUE_NAN]        = op_with_nan,
 		},
+    [VALUE_TRANSFER_FUNCTION] = {
+			[VALUE_TRANSFER_FUNCTION] = add_tf_tf,
+    },
 		[VALUE_NAN] = {
 			[VALUE_NUMBER]     = op_with_nan,
 			[VALUE_ARRAY]      = op_with_nan,
@@ -1245,14 +1467,16 @@ static const BinaryFn binop_dispatch[OP_TYPE_LIST_COUNT][VALUE_TYPE_COUNT][VALUE
 
 	[OP_MINUS] = {
 		[VALUE_NUMBER] = {
-			[VALUE_NUMBER] = sub_num_num,
-			[VALUE_ARRAY]  = sub_num_array,
-			[VALUE_NAN]    = op_with_nan,
+			[VALUE_NUMBER]     = sub_num_num,
+			[VALUE_ARRAY]      = sub_num_array,
+			[VALUE_POLYNOMIAL] = sub_num_poly,
+			[VALUE_NAN]        = op_with_nan,
 		},
 		[VALUE_ARRAY] = {
-			[VALUE_NUMBER] = sub_num_array,
-			[VALUE_ARRAY]  = sub_array_array,
-			[VALUE_NAN]    = op_with_nan,
+			[VALUE_NUMBER]     = sub_num_array,
+			[VALUE_ARRAY]      = sub_array_array,
+			[VALUE_POLYNOMIAL] = op_with_nan,
+			[VALUE_NAN]        = op_with_nan,
 		},
 		[VALUE_POLYNOMIAL] = {
 			[VALUE_NUMBER]     = sub_num_poly,
@@ -1261,33 +1485,46 @@ static const BinaryFn binop_dispatch[OP_TYPE_LIST_COUNT][VALUE_TYPE_COUNT][VALUE
 			[VALUE_NAN]        = op_with_nan,
 		},
 		[VALUE_NAN] = {
-			[VALUE_NUMBER] = op_with_nan,
-			[VALUE_ARRAY]  = op_with_nan,
-			[VALUE_NAN]    = op_with_nan,
+			[VALUE_NUMBER]     = op_with_nan,
+			[VALUE_ARRAY]      = op_with_nan,
+			[VALUE_POLYNOMIAL] = op_with_nan,
+			[VALUE_NAN]        = op_with_nan,
 		}
 	},
 
 	[OP_MUL] = {
 		[VALUE_NUMBER] = {
-			[VALUE_NUMBER] = mul_num_num,
-			[VALUE_NAN]    = op_with_nan,
+			[VALUE_NUMBER]     = mul_num_num,
+			[VALUE_POLYNOMIAL] = mul_num_poly,
+			[VALUE_NAN]        = op_with_nan,
 		},
 		[VALUE_POLYNOMIAL] = {
+			[VALUE_NUMBER]     = mul_num_poly,
 			[VALUE_POLYNOMIAL] = mul_poly_poly,
 			[VALUE_NAN]        = op_with_nan,
+		},
+		[VALUE_TRANSFER_FUNCTION] = {
+			[VALUE_TRANSFER_FUNCTION] = mul_tf_tf,
+			[VALUE_ARRAY]             = op_with_nan,
+			[VALUE_NAN]               = op_with_nan,
 		},
 		[VALUE_NAN] = {
 			[VALUE_NUMBER] = op_with_nan,
 			[VALUE_ARRAY]  = op_with_nan,
 			[VALUE_NAN]    = op_with_nan,
-		}
+		},
 	},
 
 	[OP_DIV] = {
 		[VALUE_NUMBER] = {
-			[VALUE_NUMBER] = div_num_num,
-			[VALUE_NAN]    = op_with_nan,
+			[VALUE_NUMBER]     = div_num_num,
+      [VALUE_POLYNOMIAL] = ordered_div_num_poly,
+			[VALUE_NAN]        = op_with_nan,
 		},
+		[VALUE_POLYNOMIAL] = {
+			[VALUE_NUMBER]     = ordered_div_poly_num,
+      [VALUE_POLYNOMIAL] = div_poly_poly
+    },
 		[VALUE_NAN] = {
 			[VALUE_NUMBER] = op_with_nan,
 			[VALUE_ARRAY]  = op_with_nan,
@@ -1392,6 +1629,7 @@ Value eval_func_call(Arena *a, Enviromnent *e, AST *fn){
 }
 
 void print_value(Arena *a, Enviromnent *e, Value *value){
+  printf("\n");
 	switch(value->valueType){
 		case VALUE_NUMBER:
 			{
@@ -1422,14 +1660,16 @@ void print_value(Arena *a, Enviromnent *e, Value *value){
 			}
 		case VALUE_POLYNOMIAL:
 			{
-				printf("poly([");
-				for(size_t i = 0; i < value->value.poly.num_coeffs; i++){
-					printf("%.2f", value->value.poly.coeffs[i]);
-					if(i < value->value.poly.num_coeffs - 1){
-						printf(", ");
-					}
-				}
-				printf("])\n");
+        char buf[1024];
+        poly_repr(a, &value->value.poly, buf, "x");
+        printf("%s\n", buf);
+				break;
+			}
+		case VALUE_TRANSFER_FUNCTION:
+			{
+        char buf[1024];
+        transfer_function_repr(a, &value->value.tf, buf, "x");
+        printf("%s\n", buf);
 				break;
 			}
 		default:
@@ -1438,6 +1678,7 @@ void print_value(Arena *a, Enviromnent *e, Value *value){
 				break;
 			}
 	}
+  printf("\n");
 }
 
 Value eval_expr(Arena *a, Enviromnent *e, AST *expr){
@@ -1490,11 +1731,13 @@ Value eval_expr(Arena *a, Enviromnent *e, AST *expr){
 	return value;
 }
 
-int eval_stmt(Arena *a, AST *ast, Enviromnent *e, AST *stmt){
+int eval_stmt(Arena *a, Arena* temp_arena, AST *ast, Enviromnent *e, AST *stmt){
 
 	if(stmt->as.statement.type == STATEMENT_EXPR){
-		Value result = eval_expr(a, e, stmt->as.statement.expr);
-		print_value(a, e, &result);
+    SCRATCH_SCOPE(temp_arena){
+      Value result = eval_expr(temp_arena, e, stmt->as.statement.expr);
+      print_value(temp_arena, e, &result);
+    }
 		return 0;
 	}
 
@@ -1507,8 +1750,11 @@ int eval_stmt(Arena *a, AST *ast, Enviromnent *e, AST *stmt){
 		}
 
 		//  TODO: Check if it's not null
-		Value value = eval_expr(a, e, stmt->as.statement.expr);
-		env_set_variable(a, e, dst, &value);
+    SCRATCH_SCOPE(temp_arena){
+      Value value = eval_expr(temp_arena, e, stmt->as.statement.expr);
+      Value saved = value_clone(a, &value);
+      env_set_variable(a, e, dst, &saved);
+    }
 		return 0;
 	}
 
@@ -1521,20 +1767,23 @@ int eval_stmt(Arena *a, AST *ast, Enviromnent *e, AST *stmt){
 		}
 
 		//  TODO: Check if it's not null
-		Value value = eval_expr(a, e, stmt->as.statement.expr);
-		env_set_variable(a, e, dst, &value);
+    SCRATCH_SCOPE(temp_arena){
+      Value value = eval_expr(temp_arena, e, stmt->as.statement.expr);
+      Value saved = value_clone(a, &value);
+      env_set_variable(a, e, dst, &saved);
+    }
 		return 0;
 	}
 
 	return 0;
 }
 
-int run_ast(Arena *a, AST *ast, Enviromnent *e){
+int run_ast(Arena *a, Arena* temp_arena, AST *ast, Enviromnent *e){
 
 	AST *stmt = ast->as.program.statements_list;
 
 	while(stmt != NULL){
-		int status = eval_stmt(a, ast, e, stmt);
+		int status = eval_stmt(a, temp_arena, ast, e, stmt);
 		if(status != 0) return status;
 		stmt = stmt->next;
 	}
@@ -1652,7 +1901,7 @@ int main(){
 		SCRATCH_SCOPE(&temp_arena){
 			AST *ast   = arena_alloc(&temp_arena, sizeof(AST));
 			parse_code = parse_line(&temp_arena, &e,  buffer, ast, &skip_ast_run);
-			if(!skip_ast_run) run_ast(&a, ast, &e);
+			if(!skip_ast_run) run_ast(&a, &temp_arena, ast, &e);
 		}
 	 	if(parse_code != 0){
 	 		printf("Exiting with code %i...\n", parse_code);
