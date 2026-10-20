@@ -79,6 +79,14 @@ typedef struct {
 	size_t  deg;
 } Polynomial;
 
+Polynomial alloc_poly(Arena *a, size_t deg){
+	Polynomial p;
+	p.num_coeffs = deg + 1;
+	p.deg        = deg;
+	p.coeffs     = arena_alloc(a, p.num_coeffs * sizeof(double));
+	return p;
+}
+
 int poly_repr(Arena *a, Polynomial *p, char* buf, char* variable){
 	int printed = 0;
   if(variable == NULL){
@@ -1090,6 +1098,17 @@ Polynomial clone_poly(Arena *a, Polynomial *p){
   return poly;
 }
 
+TransferFunction clone_tf(Arena *a, TransferFunction *tf){
+	Polynomial num = clone_poly(a, &tf->num);
+	Polynomial den = clone_poly(a, &tf->den);
+	TransferFunction tf_new = {
+		.num = num,
+		.den = den
+	};
+  return tf_new;
+}
+
+
 
 Value value_clone(Arena *a, Value *v){
   Value copy = *v;
@@ -1106,10 +1125,7 @@ Value value_clone(Arena *a, Value *v){
       }
     case VALUE_TRANSFER_FUNCTION: 
       {
-        Polynomial num = clone_poly(a, &v->value.tf.num);
-        Polynomial den = clone_poly(a, &v->value.tf.num);
-        copy.value.tf.num = num;
-        copy.value.tf.den = den;
+				copy.value.tf = clone_tf(a, &v->value.tf);
         break;
       }
     default: break;
@@ -1156,6 +1172,65 @@ Value make_nan(){
 	return v;
 }
 
+//============================
+//
+//   Transformations
+//
+//============================
+
+Polynomial poly_from_num(Arena *a, double n){
+	Polynomial poly = alloc_poly(a, 0);
+	poly.coeffs[0] = n;
+	return poly;
+}
+
+Polynomial scale_poly(Arena *a, Polynomial *p, double x){
+	Polynomial poly = alloc_poly(a, p->deg);
+	for(size_t i = 0; i < poly.num_coeffs; i++){
+		poly.coeffs[i] = p->coeffs[i] * x;
+	}
+	return poly;
+}
+
+
+TransferFunction tf_invert(Arena *a, TransferFunction *tf){
+	TransferFunction tf_new = {
+		.num = clone_poly(a, &tf->den),
+		.den = clone_poly(a, &tf->num),
+	};
+	return tf_new;
+}
+
+TransferFunction scale_tf(Arena *a, TransferFunction *tf, double x){
+	TransferFunction new_tf = clone_tf(a, tf);
+	new_tf.num = scale_poly(a, &new_tf.num, x);
+	return new_tf;
+}
+
+TransferFunction tf_from_poly(Arena *a, Polynomial *p){
+	Polynomial num = alloc_poly(a, p->deg);
+	memcpy(num.coeffs, p->coeffs, p->num_coeffs * sizeof(double));
+	Polynomial den = alloc_poly(a, 0);
+	den.coeffs[0] = 1;
+	TransferFunction tf = {
+		.num = num,
+		.den = den,
+	};
+	return tf;
+}
+
+TransferFunction tf_from_num(Arena *a, double n){
+	Polynomial num_poly = poly_from_num(a, n);
+	return tf_from_poly(a, &num_poly);
+}
+
+
+//============================
+//
+//   Operations
+//
+//============================
+
 typedef Value (*BinaryFn)(Arena *a, Value *left, Value *right);
 
 
@@ -1177,6 +1252,8 @@ Value div_num_num(Arena *a, Value *left, Value *right){
 Value pow_num_num(Arena *a, Value *left, Value *right){
 		return make_num(pow(left->value.number, right->value.number));
 }
+
+// ------------- Arrays --------------------
 
 Value add_num_array(Arena *a, Value *left, Value *right){
 		double num = left->valueType == VALUE_NUMBER ? left->value.number : right->value.number;
@@ -1204,17 +1281,22 @@ Value add_array_array(Arena *a, Value *left, Value *right){
 		return make_array(new_arr);
 }
 Value sub_num_array(Arena *a, Value *left, Value *right){
-		double num         = left->valueType == VALUE_NUMBER ? left->value.number : right->value.number;
-		Array  arr         = left->valueType == VALUE_ARRAY ? left->value.array : right->value.array;
-		double left_is_num = left->valueType == VALUE_NUMBER;
+		double num         = left->value.number;
+		Array  arr         = right->value.array;
 
     Array new_arr      = clone_array(a, &arr);
 		for(size_t i = 0; i < arr.size; i++){
-			if(left_is_num){
-				new_arr.nums[i] = num - arr.nums[i];
-			}else{
-				new_arr.nums[i] = arr.nums[i] - num;
-			}
+			new_arr.nums[i] = num - arr.nums[i];
+		}
+		return make_array(new_arr);
+}
+Value sub_array_num(Arena *a, Value *left, Value *right){
+		Array  arr         = left->value.array;
+		double num         = right->value.number;
+
+    Array new_arr      = clone_array(a, &arr);
+		for(size_t i = 0; i < arr.size; i++){
+			new_arr.nums[i] = arr.nums[i] - num;
 		}
 		return make_array(new_arr);
 }
@@ -1231,17 +1313,39 @@ Value sub_array_array(Arena *a, Value *left, Value *right){
 		return make_array(arr1);
 }
 
+Value mul_num_array(Arena *a, Value *left, Value *right){
+		double num = left->valueType == VALUE_NUMBER ? left->value.number : right->value.number;
+		Array  arr = left->valueType == VALUE_ARRAY ? left->value.array : right->value.array;
+
+    Array new_arr = clone_array(a, &arr);
+
+		for(size_t i = 0; i < arr.size; i++){
+			new_arr.nums[i] *= num;
+		}
+		return make_array(new_arr);
+}
+
+Value div_array_num(Arena *a, Value *left, Value *right){
+		Array  arr = left->value.array;
+		double num = right->value.number;
+
+    Array new_arr = clone_array(a, &arr);
+
+		for(size_t i = 0; i < arr.size; i++){
+			new_arr.nums[i] /= num;
+		}
+		return make_array(new_arr);
+}
+
+
 // ------------- Polynomials --------------------
 
 Value add_num_poly(Arena *a, Value *left, Value *right){
 		double num       = left->valueType == VALUE_NUMBER ? left->value.number : right->value.number;
 		Polynomial  poly = left->valueType == VALUE_POLYNOMIAL ? left->value.poly : right->value.poly;
-		Polynomial pnew;
-		pnew.num_coeffs = poly.num_coeffs;
-		pnew.deg        = poly.deg;
-		pnew.coeffs     = arena_alloc(a, poly.num_coeffs * sizeof(double));
 
-    memcpy(pnew.coeffs, poly.coeffs, poly.num_coeffs * sizeof(double));
+		Polynomial pnew = clone_poly(a, &poly);
+
 		pnew.coeffs[0] += num;
 		return make_poly(pnew);
 }
@@ -1251,10 +1355,7 @@ Value add_poly_poly(Arena *a, Value *left, Value *right){
 		Polynomial p2    = right->value.poly;
 		size_t max_size  = MAX(p1.num_coeffs, p2.num_coeffs);
 
-		Polynomial pnew;
-		pnew.num_coeffs = max_size;
-		pnew.deg        = max_size - 1;
-		pnew.coeffs     = arena_alloc(a, max_size * sizeof(double));
+		Polynomial pnew = alloc_poly(a, max_size - 1);
 
 		for(size_t i = 0; i < max_size; i++){
 			double v1 = 0;
@@ -1268,16 +1369,24 @@ Value add_poly_poly(Arena *a, Value *left, Value *right){
 }
 
 Value sub_num_poly(Arena *a, Value *left, Value *right){
-		double num          = left->valueType == VALUE_NUMBER ? left->value.number : right->value.number;
-		Polynomial  poly    = left->valueType == VALUE_POLYNOMIAL ? left->value.poly : right->value.poly;
-		double left_is_num  = left->valueType == VALUE_NUMBER;
+		double num          = left->value.number;
+		Polynomial  poly    = right->value.poly;
 
     Polynomial new_poly = clone_poly(a, &poly);
 
-		if(left_is_num) new_poly.coeffs[0] = num - poly.coeffs[0];
-		else new_poly.coeffs[0] -= num;
+		new_poly.coeffs[0] = num - poly.coeffs[0];
 		return make_poly(new_poly);
 }
+Value sub_poly_num(Arena *a, Value *left, Value *right){
+		Polynomial  poly    = left->value.poly;
+		double num          = right->value.number;
+
+    Polynomial new_poly = clone_poly(a, &poly);
+
+		new_poly.coeffs[0] -= num;
+		return make_poly(new_poly);
+}
+
 
 
 Value sub_poly_poly(Arena *a, Value *left, Value *right){
@@ -1285,10 +1394,7 @@ Value sub_poly_poly(Arena *a, Value *left, Value *right){
 		Polynomial p2    = right->value.poly;
 		size_t max_size  = MAX(p1.num_coeffs, p2.num_coeffs);
 
-		Polynomial pnew;
-		pnew.num_coeffs = max_size;
-		pnew.deg        = max_size - 1;
-		pnew.coeffs     = arena_alloc(a, max_size * sizeof(double));
+		Polynomial pnew = alloc_poly(a, max_size - 1);
 
 		for(size_t i = 0; i < max_size; i++){
 			double v1 = 0;
@@ -1302,16 +1408,11 @@ Value sub_poly_poly(Arena *a, Value *left, Value *right){
 }
 
 Value mul_poly_poly(Arena *a, Value *left, Value *right){
-		Polynomial p1    = left->value.poly;
-		Polynomial p2    = right->value.poly;
+		Polynomial p1   = left->value.poly;
+		Polynomial p2   = right->value.poly;
 
-    size_t new_deg    = p1.deg + p2.deg;
-    size_t num_coeffs = new_deg + 1;
-
-		Polynomial pnew;
-		pnew.num_coeffs = num_coeffs;
-		pnew.deg        = new_deg;
-		pnew.coeffs     = arena_alloc(a, num_coeffs * sizeof(double));
+    size_t new_deg  = p1.deg + p2.deg;
+		Polynomial pnew = alloc_poly(a, new_deg);
 
 		for(size_t i = 0; i < p1.num_coeffs; i++){
       for(size_t j = 0; j < p2.num_coeffs; j++){
@@ -1326,15 +1427,7 @@ Value mul_num_poly(Arena *a, Value *left, Value *right){
 		Polynomial p = left->valueType == VALUE_POLYNOMIAL ? left->value.poly : right->value.poly;
 		double num   = left->valueType == VALUE_NUMBER ? left->value.number : right->value.number;
 
-		Polynomial pnew;
-		pnew.num_coeffs = p.num_coeffs;
-		pnew.deg        = p.deg;
-		pnew.coeffs     = arena_alloc(a, p.num_coeffs * sizeof(double));
-
-		for(size_t i = 0; i < p.num_coeffs; i++){
-      pnew.coeffs[i] = p.coeffs[i] * num;
-		}
-    
+		Polynomial pnew = scale_poly(a, &p, num);
 		return make_poly(pnew);
 }
 
@@ -1344,8 +1437,8 @@ Value div_poly_poly(Arena *a, Value *left, Value *right){
 		Polynomial p2 = right->value.poly;
 
 		TransferFunction tf;
-    tf.num = p1;
-    tf.den = p2;
+    tf.num = clone_poly(a, &p1);
+    tf.den = clone_poly(a, &p2);
     
 		return make_transfer_function(tf);
 }
@@ -1355,11 +1448,7 @@ Value ordered_div_num_poly(Arena *a, Value *left, Value *right){
 		double num   = left->value.number;
     Polynomial p = right->value.poly; 
 
-		Polynomial pnew;
-		pnew.num_coeffs = 1;
-		pnew.deg        = 0;
-		pnew.coeffs     = arena_alloc(a, p.num_coeffs * sizeof(double));
-    pnew.coeffs[0]  = num;
+		Polynomial pnew = poly_from_num(a, num);
 
     TransferFunction tf = {
       .num = pnew,
@@ -1409,6 +1498,33 @@ Value add_tf_tf(Arena *a, Value *left, Value *right){
     return make_transfer_function(tf);
 }
 
+Value sub_tf_tf(Arena *a, Value *left, Value *right){
+    TransferFunction tf1 = left->value.tf;
+    TransferFunction tf2 = right->value.tf;
+
+    // A     C
+    // -  -  -
+    // B     D
+
+    Value A = make_poly(tf1.num);
+    Value B = make_poly(tf1.den);
+    Value C = make_poly(tf2.num);
+    Value D = make_poly(tf2.den);
+
+    Value AD = mul_poly_poly(a, &A, &D);
+    Value BC = mul_poly_poly(a, &B, &C);
+    Value BD = mul_poly_poly(a, &B, &D);
+
+    Value AD_BC = sub_poly_poly(a, &AD, &BC);
+
+    TransferFunction tf = {
+      .num = AD_BC.value.poly,
+      .den = BD.value.poly
+    };
+
+    return make_transfer_function(tf);
+}
+
 Value mul_tf_tf(Arena *a, Value *left, Value *right){
     TransferFunction tf1 = left->value.tf;
     TransferFunction tf2 = right->value.tf;
@@ -1433,115 +1549,272 @@ Value mul_tf_tf(Arena *a, Value *left, Value *right){
     return make_transfer_function(tf);
 }
 
+Value mul_tf_poly(Arena *a, Value *left, Value *right){
+    TransferFunction tf = left->valueType == VALUE_TRANSFER_FUNCTION ? left->value.tf : right->value.tf;
+    Polynomial poly     = left->valueType == VALUE_TRANSFER_FUNCTION ? right->value.poly : left->value.poly;
+
+		TransferFunction poly_tf = tf_from_poly(a, &poly);
+		Value tf_val             = make_transfer_function(tf);
+		Value poly_tf_val        = make_transfer_function(poly_tf);
+
+    return mul_tf_tf(a, &tf_val, &poly_tf_val);
+}
+
+Value add_tf_poly(Arena *a, Value *left, Value *right){
+    TransferFunction tf = left->valueType == VALUE_TRANSFER_FUNCTION ? left->value.tf : right->value.tf;
+    Polynomial poly     = left->valueType == VALUE_TRANSFER_FUNCTION ? right->value.poly : left->value.poly;
+
+		TransferFunction poly_tf = tf_from_poly(a, &poly);
+		Value tf_val             = make_transfer_function(tf);
+		Value poly_tf_val        = make_transfer_function(poly_tf);
+
+    return add_tf_tf(a, &tf_val, &poly_tf_val);
+}
+
+Value sub_tf_poly(Arena *a, Value *left, Value *right){
+    TransferFunction tf = left->value.tf;
+    Polynomial poly     = right->value.poly;
+
+		TransferFunction poly_tf = tf_from_poly(a, &poly);
+		Value tf_val             = make_transfer_function(tf);
+		Value poly_tf_val        = make_transfer_function(poly_tf);
+
+    return sub_tf_tf(a, &tf_val, &poly_tf_val);
+}
+
+Value sub_poly_tf(Arena *a, Value *left, Value *right){
+    Polynomial poly     = left->value.poly;
+    TransferFunction tf = right->value.tf;
+
+		TransferFunction poly_tf = tf_from_poly(a, &poly);
+		Value tf_val             = make_transfer_function(tf);
+		Value poly_tf_val        = make_transfer_function(poly_tf);
+
+    return sub_tf_tf(a, &poly_tf_val, &tf_val);
+}
+
+Value add_num_tf(Arena *a, Value *left, Value *right){
+    TransferFunction tf = left->valueType == VALUE_TRANSFER_FUNCTION ? left->value.tf : right->value.tf;
+    double num          = left->valueType == VALUE_TRANSFER_FUNCTION ? right->value.number : left->value.number;
+
+		TransferFunction num_tf = tf_from_num(a, num);
+		Value tf_val            = make_transfer_function(tf);
+		Value num_tf_val        = make_transfer_function(num_tf);
+
+    return add_tf_tf(a, &tf_val, &num_tf_val);
+}
+
+
+Value sub_tf_num(Arena *a, Value *left, Value *right){
+    TransferFunction tf = left->value.tf;
+    double num          = right->value.number;
+
+		TransferFunction num_tf = tf_from_num(a, num);
+		Value tf_val            = make_transfer_function(tf);
+		Value num_tf_val        = make_transfer_function(num_tf);
+
+    return sub_tf_tf(a, &tf_val, &num_tf_val);
+}
+Value sub_num_tf(Arena *a, Value *left, Value *right){
+    double num          = left->value.number;
+    TransferFunction tf = right->value.tf;
+
+		TransferFunction num_tf = tf_from_num(a, num);
+		Value tf_val            = make_transfer_function(tf);
+		Value num_tf_val        = make_transfer_function(num_tf);
+
+    return sub_tf_tf(a, &num_tf_val, &tf_val);
+}
+Value mul_num_tf(Arena *a, Value *left, Value *right){
+    TransferFunction tf = left->valueType == VALUE_TRANSFER_FUNCTION ? left->value.tf : right->value.tf;
+    double num          = left->valueType == VALUE_TRANSFER_FUNCTION ? right->value.number : left->value.number;
+
+		TransferFunction new_tf = scale_tf(a, &tf, num);
+    return make_transfer_function(new_tf);
+}
+Value div_num_tf(Arena *a, Value *left, Value *right){
+    double num          = left->value.number;
+    TransferFunction tf = right->value.tf;
+
+		TransferFunction inv_tf = tf_invert(a, &tf);
+		TransferFunction new_tf = scale_tf(a, &inv_tf, num);
+
+    return make_transfer_function(new_tf);
+}
+
+Value div_poly_tf(Arena *a, Value *left, Value *right){
+		Polynomial p        = left->value.poly;
+		TransferFunction tf = right->value.tf;
+
+		TransferFunction tf_inv  = tf_invert(a, &tf);
+		TransferFunction tf_poly = tf_from_poly(a, &p);
+		
+		Value tf_inv_val = make_transfer_function(tf_inv);
+		Value tf_poly_val = make_transfer_function(tf_poly);
+
+		return mul_tf_tf(a, &tf_inv_val, &tf_poly_val);
+}
+
+
 
 static const BinaryFn binop_dispatch[OP_TYPE_LIST_COUNT][VALUE_TYPE_COUNT][VALUE_TYPE_COUNT] = {
 	[OP_PLUS] = {
 		[VALUE_NUMBER] = {
-			[VALUE_NUMBER]     = add_num_num,
-			[VALUE_ARRAY]      = add_num_array,
-			[VALUE_POLYNOMIAL] = add_num_poly,
-			[VALUE_NAN]        = op_with_nan,
+			[VALUE_NUMBER]            = add_num_num,
+			[VALUE_ARRAY]             = add_num_array,
+			[VALUE_POLYNOMIAL]        = add_num_poly,
+			[VALUE_TRANSFER_FUNCTION] = add_num_tf,
+			[VALUE_NAN]               = op_with_nan,
 		},
 		[VALUE_ARRAY] = {
-			[VALUE_NUMBER]     = add_num_array,
-			[VALUE_ARRAY]      = add_array_array,
-			[VALUE_POLYNOMIAL] = op_with_nan,
-			[VALUE_NAN]        = op_with_nan,
+			[VALUE_NUMBER]            = add_num_array,
+			[VALUE_ARRAY]             = add_array_array,
+			[VALUE_POLYNOMIAL]        = op_with_nan,
+			[VALUE_TRANSFER_FUNCTION] = op_with_nan,
+			[VALUE_NAN]               = op_with_nan,
 		},
 		[VALUE_POLYNOMIAL] = {
-			[VALUE_NUMBER]     = add_num_poly,
-			[VALUE_ARRAY]      = op_with_nan,
-			[VALUE_POLYNOMIAL] = add_poly_poly,
-			[VALUE_NAN]        = op_with_nan,
+			[VALUE_NUMBER]            = add_num_poly,
+			[VALUE_ARRAY]             = op_with_nan,
+			[VALUE_POLYNOMIAL]        = add_poly_poly,
+			[VALUE_TRANSFER_FUNCTION] = add_tf_poly,
+			[VALUE_NAN]               = op_with_nan,
 		},
     [VALUE_TRANSFER_FUNCTION] = {
+			[VALUE_NUMBER]            = add_num_tf,
+			[VALUE_ARRAY]             = op_with_nan,
+			[VALUE_POLYNOMIAL]        = add_tf_poly,
 			[VALUE_TRANSFER_FUNCTION] = add_tf_tf,
+			[VALUE_NAN]               = op_with_nan,
     },
 		[VALUE_NAN] = {
-			[VALUE_NUMBER]     = op_with_nan,
-			[VALUE_ARRAY]      = op_with_nan,
-			[VALUE_POLYNOMIAL] = op_with_nan,
-			[VALUE_NAN]        = op_with_nan,
+			[VALUE_NUMBER]            = op_with_nan,
+			[VALUE_ARRAY]             = op_with_nan,
+			[VALUE_POLYNOMIAL]        = op_with_nan,
+			[VALUE_TRANSFER_FUNCTION] = op_with_nan,
+			[VALUE_NAN]               = op_with_nan,
 		}
 	},
 
 	[OP_MINUS] = {
 		[VALUE_NUMBER] = {
-			[VALUE_NUMBER]     = sub_num_num,
-			[VALUE_ARRAY]      = sub_num_array,
-			[VALUE_POLYNOMIAL] = sub_num_poly,
-			[VALUE_NAN]        = op_with_nan,
+			[VALUE_NUMBER]            = sub_num_num,
+			[VALUE_ARRAY]             = sub_num_array,
+			[VALUE_POLYNOMIAL]        = sub_num_poly,
+			[VALUE_TRANSFER_FUNCTION] = sub_num_tf,
+			[VALUE_NAN]               = op_with_nan,
 		},
 		[VALUE_ARRAY] = {
-			[VALUE_NUMBER]     = sub_num_array,
-			[VALUE_ARRAY]      = sub_array_array,
-			[VALUE_POLYNOMIAL] = op_with_nan,
-			[VALUE_NAN]        = op_with_nan,
+			[VALUE_NUMBER]            = sub_array_num,
+			[VALUE_ARRAY]             = sub_array_array,
+			[VALUE_POLYNOMIAL]        = op_with_nan,
+			[VALUE_TRANSFER_FUNCTION] = op_with_nan,
+			[VALUE_NAN]               = op_with_nan,
 		},
 		[VALUE_POLYNOMIAL] = {
-			[VALUE_NUMBER]     = sub_num_poly,
-			[VALUE_ARRAY]      = op_with_nan,
-			[VALUE_POLYNOMIAL] = sub_poly_poly,
-			[VALUE_NAN]        = op_with_nan,
+			[VALUE_NUMBER]            = sub_poly_num,
+			[VALUE_ARRAY]             = op_with_nan,
+			[VALUE_POLYNOMIAL]        = sub_poly_poly,
+			[VALUE_TRANSFER_FUNCTION] = sub_poly_tf,
+			[VALUE_NAN]               = op_with_nan,
+		},
+		[VALUE_TRANSFER_FUNCTION] = {
+			[VALUE_NUMBER]            = sub_tf_num,
+			[VALUE_ARRAY]             = op_with_nan,
+			[VALUE_POLYNOMIAL]        = sub_tf_poly,
+			[VALUE_TRANSFER_FUNCTION] = sub_tf_tf,
+			[VALUE_NAN]               = op_with_nan,
 		},
 		[VALUE_NAN] = {
-			[VALUE_NUMBER]     = op_with_nan,
-			[VALUE_ARRAY]      = op_with_nan,
-			[VALUE_POLYNOMIAL] = op_with_nan,
-			[VALUE_NAN]        = op_with_nan,
+			[VALUE_NUMBER]            = op_with_nan,
+			[VALUE_ARRAY]             = op_with_nan,
+			[VALUE_POLYNOMIAL]        = op_with_nan,
+			[VALUE_TRANSFER_FUNCTION] = op_with_nan,
+			[VALUE_NAN]               = op_with_nan,
 		}
 	},
 
 	[OP_MUL] = {
 		[VALUE_NUMBER] = {
-			[VALUE_NUMBER]     = mul_num_num,
-			[VALUE_POLYNOMIAL] = mul_num_poly,
-			[VALUE_NAN]        = op_with_nan,
+			[VALUE_NUMBER]            = mul_num_num,
+			[VALUE_ARRAY]             = mul_num_array,
+			[VALUE_POLYNOMIAL]        = mul_num_poly,
+			[VALUE_TRANSFER_FUNCTION] = mul_num_tf,
+			[VALUE_NAN]               = op_with_nan,
+		},
+		[VALUE_ARRAY] = {
+			[VALUE_NUMBER]            = mul_num_array,
+			[VALUE_ARRAY]             = op_with_nan,
+			[VALUE_POLYNOMIAL]        = op_with_nan,
+			[VALUE_TRANSFER_FUNCTION] = op_with_nan,
+			[VALUE_NAN]               = op_with_nan,
 		},
 		[VALUE_POLYNOMIAL] = {
-			[VALUE_NUMBER]     = mul_num_poly,
-			[VALUE_POLYNOMIAL] = mul_poly_poly,
-			[VALUE_NAN]        = op_with_nan,
+			[VALUE_NUMBER]            = mul_num_poly,
+			[VALUE_ARRAY]             = op_with_nan,
+			[VALUE_POLYNOMIAL]        = mul_poly_poly,
+			[VALUE_TRANSFER_FUNCTION] = mul_tf_poly,
+			[VALUE_NAN]               = op_with_nan,
 		},
 		[VALUE_TRANSFER_FUNCTION] = {
-			[VALUE_TRANSFER_FUNCTION] = mul_tf_tf,
+			[VALUE_NUMBER]            = mul_num_tf,
 			[VALUE_ARRAY]             = op_with_nan,
+			[VALUE_POLYNOMIAL]        = mul_tf_poly,
+			[VALUE_TRANSFER_FUNCTION] = mul_tf_tf,
 			[VALUE_NAN]               = op_with_nan,
 		},
 		[VALUE_NAN] = {
-			[VALUE_NUMBER] = op_with_nan,
-			[VALUE_ARRAY]  = op_with_nan,
-			[VALUE_NAN]    = op_with_nan,
+			[VALUE_NUMBER]            = op_with_nan,
+			[VALUE_ARRAY]             = op_with_nan,
+			[VALUE_POLYNOMIAL]        = op_with_nan,
+			[VALUE_TRANSFER_FUNCTION] = op_with_nan,
+			[VALUE_NAN]               = op_with_nan,
 		},
 	},
 
 	[OP_DIV] = {
 		[VALUE_NUMBER] = {
-			[VALUE_NUMBER]     = div_num_num,
-      [VALUE_POLYNOMIAL] = ordered_div_num_poly,
-			[VALUE_NAN]        = op_with_nan,
+			[VALUE_NUMBER]            = div_num_num,
+			[VALUE_ARRAY]             = op_with_nan,
+      [VALUE_POLYNOMIAL]        = ordered_div_num_poly,
+			[VALUE_TRANSFER_FUNCTION] = div_num_tf,
+			[VALUE_NAN]               = op_with_nan,
+		},
+		[VALUE_ARRAY] = {
+			[VALUE_NUMBER]            = div_array_num,
+			[VALUE_ARRAY]             = op_with_nan,
+			[VALUE_POLYNOMIAL]        = op_with_nan,
+			[VALUE_TRANSFER_FUNCTION] = op_with_nan,
+			[VALUE_NAN]               = op_with_nan,
 		},
 		[VALUE_POLYNOMIAL] = {
-			[VALUE_NUMBER]     = ordered_div_poly_num,
-      [VALUE_POLYNOMIAL] = div_poly_poly
+			[VALUE_NUMBER]            = ordered_div_poly_num,
+			[VALUE_ARRAY]             = op_with_nan,
+      [VALUE_POLYNOMIAL]        = div_poly_poly,
+			[VALUE_TRANSFER_FUNCTION] = div_poly_tf,
+			[VALUE_NAN]               = op_with_nan,
     },
 		[VALUE_NAN] = {
-			[VALUE_NUMBER] = op_with_nan,
-			[VALUE_ARRAY]  = op_with_nan,
-			[VALUE_NAN]    = op_with_nan,
+			[VALUE_NUMBER]            = op_with_nan,
+			[VALUE_ARRAY]             = op_with_nan,
+			[VALUE_POLYNOMIAL]        = op_with_nan,
+			[VALUE_TRANSFER_FUNCTION] = op_with_nan,
+			[VALUE_NAN]               = op_with_nan,
 		} 
 	},
 
 	[OP_POW] = {
 		[VALUE_NUMBER] = {
-			[VALUE_NUMBER] = pow_num_num,
-			[VALUE_ARRAY]  = op_with_nan,
-			[VALUE_NAN]    = op_with_nan,
+			[VALUE_NUMBER]            = pow_num_num,
+			[VALUE_ARRAY]             = op_with_nan,
+			[VALUE_NAN]               = op_with_nan,
 		},
 		[VALUE_NAN] = {
-			[VALUE_NUMBER] = op_with_nan,
-			[VALUE_ARRAY]  = op_with_nan,
-			[VALUE_NAN]    = op_with_nan,
+			[VALUE_NUMBER]            = op_with_nan,
+			[VALUE_ARRAY]             = op_with_nan,
+			[VALUE_POLYNOMIAL]        = op_with_nan,
+			[VALUE_TRANSFER_FUNCTION] = op_with_nan,
+			[VALUE_NAN]               = op_with_nan,
 		} 
 	},
 };
