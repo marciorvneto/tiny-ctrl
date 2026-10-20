@@ -10,6 +10,7 @@
 
 #define UNREACHABLE(x) do { fprintf(stderr, "Unreachable: " x); exit(1); } while(0);
 #define MAX(x,y) ((x) > (y) ? (x) : (y))
+#define MIN(x,y) ((x) < (y) ? (x) : (y))
 
 //============================== 
 //
@@ -77,21 +78,6 @@ typedef struct {
 	size_t  num_coeffs;
 	size_t  deg;
 } Polynomial;
-
-Polynomial poly_create(Arena *a, size_t deg, int *err){
-	*err = 0;
-	size_t num_coeffs = deg + 1;
-	double *coeffs = arena_alloc(a, num_coeffs * sizeof(double));
-	if(coeffs == NULL){
-		*err = 1;
-	}
-	Polynomial p = {
-		.coeffs     = coeffs,
-		.deg        = deg,
-		.num_coeffs = num_coeffs
-	};
-	return p;
-}
 
 void poly_repr(Arena *a, Polynomial *p, char* buf){
 	int printed = 0;
@@ -1050,6 +1036,19 @@ Value make_array(Array arr){
 	};
 	return v;
 }
+
+Polynomial poly_new(Arena *a, double *src_coeffs, size_t num_coeffs){
+	size_t deg = num_coeffs - 1;
+	double *coeffs = arena_alloc(a, num_coeffs * sizeof(double));
+  memcpy(coeffs, src_coeffs, num_coeffs * sizeof(double));
+	Polynomial p = {
+		.coeffs     = coeffs,
+		.deg        = deg,
+		.num_coeffs = num_coeffs
+	};
+	return p;
+}
+
 Value make_poly(Polynomial poly){
 	Value v = {
 		.valueType  = VALUE_POLYNOMIAL,
@@ -1057,6 +1056,8 @@ Value make_poly(Polynomial poly){
 	};
 	return v;
 }
+
+
 
 Value make_nan(){
 	Value v = {
@@ -1192,7 +1193,26 @@ Value sub_poly_poly(Arena *a, Value *left, Value *right){
 		return make_poly(pnew);
 }
 
+Value mul_poly_poly(Arena *a, Value *left, Value *right){
+		Polynomial p1    = left->value.poly;
+		Polynomial p2    = right->value.poly;
 
+    size_t new_deg    = p1.deg + p2.deg;
+    size_t num_coeffs = new_deg + 1;
+
+		Polynomial pnew;
+		pnew.num_coeffs = num_coeffs;
+		pnew.deg        = new_deg;
+		pnew.coeffs     = arena_alloc(a, num_coeffs * sizeof(double));
+
+		for(size_t i = 0; i < p1.num_coeffs; i++){
+      for(size_t j = 0; j < p2.num_coeffs; j++){
+        pnew.coeffs[i + j] += p1.coeffs[i] * p2.coeffs[j];
+      }
+		}
+    
+		return make_poly(pnew);
+}
 
 
 static const BinaryFn binop_dispatch[OP_TYPE_LIST_COUNT][VALUE_TYPE_COUNT][VALUE_TYPE_COUNT] = {
@@ -1251,6 +1271,10 @@ static const BinaryFn binop_dispatch[OP_TYPE_LIST_COUNT][VALUE_TYPE_COUNT][VALUE
 		[VALUE_NUMBER] = {
 			[VALUE_NUMBER] = mul_num_num,
 			[VALUE_NAN]    = op_with_nan,
+		},
+		[VALUE_POLYNOMIAL] = {
+			[VALUE_POLYNOMIAL] = mul_poly_poly,
+			[VALUE_NAN]        = op_with_nan,
 		},
 		[VALUE_NAN] = {
 			[VALUE_NUMBER] = op_with_nan,
@@ -1354,7 +1378,9 @@ Value eval_func_call(Arena *a, Enviromnent *e, AST *fn){
 
 		if(strcmp(fn->as.fn_call.fn_name, "poly") == 0) {
 			if(val.valueType == VALUE_ARRAY){
-				return make_poly(val.value.poly);
+        int err;
+        Polynomial p = poly_new(a, val.value.array.nums, val.value.array.size);
+				return make_poly(p);
 			}
 			printf("Unsupported operation!\n");
 			return make_nan();
