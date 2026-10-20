@@ -1082,7 +1082,7 @@ Value div_num_num(Arena *a, Value *left, Value *right){
 		return make_num(left->value.number / right->value.number);
 }
 Value pow_num_num(Arena *a, Value *left, Value *right){
-		return make_num(powf(left->value.number, right->value.number));
+		return make_num(pow(left->value.number, right->value.number));
 }
 
 Value add_num_array(Arena *a, Value *left, Value *right){
