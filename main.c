@@ -5,6 +5,9 @@
 #include <string.h>
 #include <math.h>
 
+#define EPSILON 1e-12
+#define CLOSE(x,y) fabs((x)-(y)) < EPSILON
+#define ISZERO(x) CLOSE((x), 0)
 #define ALIGNMENT 16 	// Might change that in the future
 #define ALIGN_ALLOC(offset, align) ((offset + ((align) - 1)) & (~((align) - 1))) // Alignment trick
 
@@ -1347,6 +1350,63 @@ char *string_from_num(Arena *a, double num){
   return num_str;
 }
 
+//============================
+//
+//   Algorithms
+//
+//============================
+
+int poly_is_zero(Polynomial *p){
+  double max = -1;
+  for(size_t i = 0; i < p->num_coeffs; i++){
+    max = MAX(max, fabs(p->coeffs[i]));
+  }
+  if(max < EPSILON){
+    return 1;
+  }
+  return 0;
+}
+
+void poly_update_degree(Polynomial *p){
+  size_t i = p->num_coeffs - 1;
+  while(ISZERO(p->coeffs[i])) i--;
+  p->num_coeffs = i + 1;
+  p->deg        = i;
+}
+
+Polynomial poly_monic(Arena *a, Polynomial p){
+  return scale_poly(a, &p, 1.0/p.coeffs[p.num_coeffs - 1]);
+}
+
+Polynomial poly_mod(Arena *arena, Polynomial a, Polynomial b){
+  // a = bq + r
+  // Assumes deg(A) >= deg(B)
+
+  Polynomial q = alloc_poly(arena, a.deg - b.deg);
+  Polynomial r = alloc_poly(arena, a.deg - b.deg);
+
+  int i = a.num_coeffs - 1;
+  double coef = a.coeffs[i] / b.coeffs[b.num_coeffs - 1];
+  q.coeffs[i - b.deg] = coef;
+
+  // for(int j = 0; j < i; j++){
+  //   r.coeffs[i] = 
+  // }
+  //
+
+
+}
+
+// Polynomial poly_gcd(Arena *arena, Polynomial a, Polynomial b){
+//   // Euclid'a gcd algorithm for polynomials
+//   while(!poly_is_zero(&b)){
+//     Polynomial r = poly_mod(a, b);
+//     a = b;
+//     b = r;
+//   }
+//   return poly_monic(arena, a);
+// }
+//
 
 //============================
 //
@@ -2239,6 +2299,7 @@ Value eval_func_call(Arena *a, Enviromnent *e, char *script_path, AST *fn, int *
 			if(val.valueType == VALUE_ARRAY){
         int err;
         Polynomial p = poly_new(a, val.value.array.nums, val.value.array.size);
+        poly_update_degree(&p);
 				return make_poly(p);
 			}
 			printf("Unsupported operation!\n");
