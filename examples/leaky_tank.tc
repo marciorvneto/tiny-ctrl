@@ -19,17 +19,18 @@ let kd = 0.3
 let tau = 0.01
 let H = 1 / poly([1, tau])
 
-H
+print("The leaky tank's TF is:")
+print(H)
 
 // PID transfer function
 let s = poly([0, 1])
 let C = kp + ki/s + kd*s
 
-C
+print("The PID's TF is:")
+print(C)
 
 // Feedback system
 let W = (C * H) / (1 + C * H)
 
-W
-
+print("The feedback loop's TF:")
 print(W)
