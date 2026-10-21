@@ -2030,7 +2030,7 @@ Value resolve_variable(Arena *a, Enviromnent *e, Value *literal){
 		return *var->value;
 }
 
-Value eval_expr(Arena *a, Enviromnent *e, AST *expr, int *silent);
+Value eval_expr(Arena *a, Enviromnent *e, char *script_path, AST *expr, int *silent);
 
 Value eval_binop(Arena *a, Enviromnent *e, AST *op, Value *raw_left, Value *raw_right){
 
@@ -2121,17 +2121,87 @@ void print_value(Arena *a, Enviromnent *e, Value *value){
 			}
 		default:
 			{
-				printf("<UNK>\n");
 				break;
 			}
 	}
   printf("\n");
 }
 
-Value eval_func_call(Arena *a, Enviromnent *e, AST *fn, int *silent){
+int run_program(Arena *temp_arena, Enviromnent *e, FILE *f, char *script_path);
+
+char *resolve_path(Arena *a, char* importer, char *path){
+  char *candidate = NULL;
+
+  // base.tc            -> executable_path/libs/base.tc
+  // ./folder/script.tc -> caller_path/folder/script.tc
+  // Absolute paths are kept
+
+  if(path[0] == '/'){
+    // Absolute
+    return clone_string(a, path);
+  }
+
+  if(path[0] == '~' && path[1] == '/'){
+    const char *home = getenv("HOME");
+    if(!home) return NULL;
+
+    // Example:
+    // path     = ~/scripts/a.tc              (14 chars)
+    // home     = /home/user                  (10 chars)
+    // combined = /home/user/scripts/a.tc     (23 chars) -> len1 + len2 - 1
+
+    size_t len       = strlen(home) + strlen(path) - 1;
+    candidate        = arena_alloc(a, len + 1);
+    sprintf(candidate, "%s%s", home, path + 1);
+    candidate[len]   = '\0';
+    return candidate;
+
+  }
+
+  // Resolve wrt the executable path
+  // Example:
+  // path        = drone/quadrotor.tc                                             (18 chars)
+  // importer    = /home/user/folder/tiny-ctrl/build/tctl                         (38 chars)
+  // base_folder = /home/user/folder/tiny-ctrl/build                              (33 chars)
+  // lib_folder  = libs                                                           (4 chars)
+  // abs path    = /home/user/folder/tiny-ctrl/build/libs/drone/quadrotor.tc      (57 chars)
+
+  char *last_slash = strrchr(importer, '/');
+  if(!last_slash) return NULL;
+
+  size_t base_folder_len = last_slash - importer;
+
+  const char *lib_folder = "libs";
+
+  size_t path_len = strlen(path)        + 
+                    base_folder_len     + 
+                    strlen(lib_folder)  +
+                    2;                      // Missing 2 slashes
+
+  candidate = arena_alloc(a, path_len + 1);
+  strncpy(candidate, importer, base_folder_len);
+  sprintf(candidate + base_folder_len, "/%s/%s", lib_folder, path);
+  candidate[path_len] = '\0';
+
+  return candidate;
+}
+
+int import_script(Arena *a, Enviromnent *e, char* importer, char *path){ 
+  char *resolved_path = resolve_path(a, importer, path);
+  FILE *f             = fopen(resolved_path, "r");
+  if(f == NULL){
+    perror(path);
+    return 1;
+  }
+  int code = run_program(a, e, f, importer);
+  fclose(f);
+  return code;
+}
+
+Value eval_func_call(Arena *a, Enviromnent *e, char *script_path, AST *fn, int *silent){
 
 	if(fn->as.fn_call.num_arguments == 1 || 1){
-		Value val = eval_expr(a, e, fn->as.fn_call.first_arg, silent);
+		Value val = eval_expr(a, e, script_path, fn->as.fn_call.first_arg, silent);
 
     // Utility
 
@@ -2140,6 +2210,19 @@ Value eval_func_call(Arena *a, Enviromnent *e, AST *fn, int *silent){
       *silent = 1;
 			return make_num(0);
 		}
+
+		if(strcmp(fn->as.fn_call.fn_name, "import") == 0) {
+      if(val.valueType != VALUE_STRING){
+        char buf[1024];
+        printf("Importing a module expects a string.\n");
+        *silent = 1;
+        return make_num(0);
+      }
+      import_script(a, e, script_path, val.value.str);
+      *silent = 1;
+			return make_num(0);
+		}
+
 
 
 		// Basic math on numbers
@@ -2168,7 +2251,7 @@ Value eval_func_call(Arena *a, Enviromnent *e, AST *fn, int *silent){
 }
 
 
-Value eval_expr(Arena *a, Enviromnent *e, AST *expr, int *silent){
+Value eval_expr(Arena *a, Enviromnent *e, char *script_path, AST *expr, int *silent){
 	Value value = {0};
 
 	switch(expr->type){
@@ -2195,7 +2278,7 @@ Value eval_expr(Arena *a, Enviromnent *e, AST *expr, int *silent){
 				AST *item              = expr->as.array.first;
 				size_t i               = 0;
 				while(item != NULL){
-					Value item_value = eval_expr(a, e, item, silent);
+					Value item_value = eval_expr(a, e, script_path, item, silent);
 					// TODO: check if it really is a number
 					value.value.array.nums[i++] = item_value.value.number;
 					item                        = item->next;
@@ -2204,14 +2287,14 @@ Value eval_expr(Arena *a, Enviromnent *e, AST *expr, int *silent){
 			}
 		case AST_BINARY_OP:
 			{
-				Value left  = eval_expr(a,  e, expr->as.binop.left, silent);
-				Value right = eval_expr(a,  e, expr->as.binop.right, silent);
+				Value left  = eval_expr(a,  e, script_path, expr->as.binop.left, silent);
+				Value right = eval_expr(a,  e, script_path, expr->as.binop.right, silent);
 				value       = eval_binop(a, e, expr, &left, &right);
 				break;
 			}
 		case AST_FN_CALL:
 			{
-				value       = eval_func_call(a, e, expr, silent);
+				value       = eval_func_call(a, e, script_path, expr, silent);
 				break;
 			}
 		default:
@@ -2224,13 +2307,13 @@ Value eval_expr(Arena *a, Enviromnent *e, AST *expr, int *silent){
 	return value;
 }
 
-int eval_stmt(Arena* temp_arena, AST *ast, Enviromnent *e, AST *stmt){
+int eval_stmt(Arena* temp_arena, AST *ast, Enviromnent *e, char *script_path, AST *stmt){
 
   int silent = 0;
 
 	if(stmt->as.statement.type == STATEMENT_EXPR){
     SCRATCH_SCOPE(temp_arena){
-      Value result = eval_expr(temp_arena, e, stmt->as.statement.expr, &silent);
+      Value result = eval_expr(temp_arena, e, script_path, stmt->as.statement.expr, &silent);
       if(!silent) print_value(temp_arena, e, &result);
     }
 		return 0;
@@ -2246,7 +2329,7 @@ int eval_stmt(Arena* temp_arena, AST *ast, Enviromnent *e, AST *stmt){
 
 		//  TODO: Check if it's not null
     SCRATCH_SCOPE(temp_arena){
-      Value value = eval_expr(temp_arena, e, stmt->as.statement.expr, &silent);
+      Value value = eval_expr(temp_arena, e, script_path, stmt->as.statement.expr, &silent);
       Value saved = value_clone(e->persistent, &value);
       env_set_variable(e->persistent, e, dst, &saved);
     }
@@ -2263,7 +2346,7 @@ int eval_stmt(Arena* temp_arena, AST *ast, Enviromnent *e, AST *stmt){
 
 		//  TODO: Check if it's not null
     SCRATCH_SCOPE(temp_arena){
-      Value value = eval_expr(temp_arena, e, stmt->as.statement.expr, &silent);
+      Value value = eval_expr(temp_arena, e, script_path, stmt->as.statement.expr, &silent);
       Value saved = value_clone(e->persistent, &value);
       env_set_variable(e->persistent, e, dst, &saved);
     }
@@ -2273,12 +2356,12 @@ int eval_stmt(Arena* temp_arena, AST *ast, Enviromnent *e, AST *stmt){
 	return 0;
 }
 
-int run_ast(Arena* temp_arena, AST *ast, Enviromnent *e){
+int run_ast(Arena* temp_arena, AST *ast, Enviromnent *e, char *script_path){
 
 	AST *stmt = ast->as.program.statements_list;
 
 	while(stmt != NULL){
-		int status = eval_stmt(temp_arena, ast, e, stmt);
+		int status = eval_stmt(temp_arena, ast, e, script_path, stmt);
 		if(status != 0) return status;
 		stmt = stmt->next;
 	}
@@ -2372,15 +2455,13 @@ void cleanup(Arena *temp_arena, Arena *a){
 	arena_destroy(a);
 }
 
-int launch_repl(Arena *temp_arena, Arena *a){
+int launch_repl(Arena *temp_arena, Enviromnent *e, char *script_path){
 	char *buffer      = NULL; // Null-terminated
 	size_t size       = 0;
 	ssize_t nread     = 0;
 	ssize_t last_good = 0;
 	int parse_code    = 0;
 	int stop          = 0;
-
-	Enviromnent e     = env_create(a);
 
 	int skip_ast_run  = 0;
 	while(1){
@@ -2402,12 +2483,12 @@ int launch_repl(Arena *temp_arena, Arena *a){
 
 		SCRATCH_SCOPE(temp_arena){
 			AST *ast   = arena_alloc(temp_arena, sizeof(AST));
-			parse_code = parse_line(temp_arena, &e,  buffer, ast, &skip_ast_run, &stop);
+			parse_code = parse_line(temp_arena, e,  buffer, ast, &skip_ast_run, &stop);
 			if(stop){
 				free(buffer);
 				return parse_code;
 			}
-			if(!skip_ast_run) run_ast(temp_arena, ast, &e);
+			if(!skip_ast_run) run_ast(temp_arena, ast, e, script_path);
 		}
 		if(parse_code != 0){
 			printf("Exiting with code %i...\n", parse_code);
@@ -2419,12 +2500,10 @@ int launch_repl(Arena *temp_arena, Arena *a){
 	return parse_code;
 }
 
-int run_program(Arena *temp_arena, Arena *a, FILE *f){
-	char *line = NULL;
-	size_t len = 0;
-	ssize_t read = 0;
-
-	Enviromnent e     = env_create(a);
+int run_program(Arena *temp_arena, Enviromnent *e, FILE *f, char *script_path){
+	char *line        = NULL;
+	size_t len        = 0;
+	ssize_t read      = 0;
 
 	ssize_t last_good = 0;
 	int parse_code    = 0;
@@ -2443,12 +2522,12 @@ int run_program(Arena *temp_arena, Arena *a, FILE *f){
 
 		SCRATCH_SCOPE(temp_arena){
 			AST *ast   = arena_alloc(temp_arena, sizeof(AST));
-			parse_code = parse_line(temp_arena, &e,  line, ast, &skip_ast_run, &stop);
+			parse_code = parse_line(temp_arena, e,  line, ast, &skip_ast_run, &stop);
 			if(stop){
 				free(line);
 				return parse_code;
 			}
-			if(!skip_ast_run) run_ast(temp_arena, ast, &e);
+			if(!skip_ast_run) run_ast(temp_arena, ast, e, script_path);
 		}
 		if(parse_code != 0){
 			printf("Exiting with code %i...\n", parse_code);
@@ -2469,12 +2548,13 @@ int main(int argc, char **argv){
 
 	Arena temp_arena = arena_create(1024 * 1024);      // 1 MB for now
 	Arena a          = arena_create(32 * 1024 * 1024); // 32 MB for now
+	Enviromnent e    = env_create(&a);
 
 	int skip_ast_run  = 0;
 
 	if(argc < 2){
 		// REPL
-		int code = launch_repl(&temp_arena, &a);
+		int code = launch_repl(&temp_arena, &e, argv[0]);
 		cleanup(&temp_arena, &a);
 		return code;
 	}else{
@@ -2490,7 +2570,7 @@ int main(int argc, char **argv){
 		FILE *f = fopen(argv[1], "r");
 
 		if(f != NULL){
-			int code = run_program(&temp_arena, &a, f);
+			int code = run_program(&temp_arena, &e, f, argv[1]);
 			cleanup(&temp_arena, &a);
 			return code;
 		}else{

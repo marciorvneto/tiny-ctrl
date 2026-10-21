@@ -3,3 +3,4 @@ tctl: main.c build
 
 build:
 	mkdir -p build
+	cp -r libs build

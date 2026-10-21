@@ -9,7 +9,9 @@
 // 
 // -----------------------------------------------------
 
-// PID gains
+import("libs/base.tc")
+
+// PID gains.
 
 let kp = 0.1
 let ki = 0.2

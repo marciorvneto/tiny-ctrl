@@ -1,0 +1,13 @@
+// -----------------------------------------------------
+// 
+//  BASE LIB
+//  By: Marcio R. V. Neto, 2026
+// 
+//  Basic definitions that are commonly used
+//  in control projects
+// 
+// -----------------------------------------------------
+
+// Useful variables
+
+let s = poly([0, 1])
