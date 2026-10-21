@@ -773,6 +773,7 @@ AST *parse_fn_call(Arena *a, AST *parent, Parser *parser, char* fn_name){
 		AST *fn_call = ast_make_fn_call(a, fn_name);
 		if(!parser_done(parser) && parser_peek(parser)->type == TOK_RPAREN){
 			if(parser_eat(TOK_RPAREN, parser) == NULL) return NULL;
+			fn_call->as.fn_call.num_arguments = 0;
 			return fn_call;
 		}
 
@@ -781,19 +782,23 @@ AST *parse_fn_call(Arena *a, AST *parent, Parser *parser, char* fn_name){
 		AST *tail = NULL;
 		if(head == NULL){
 			if(parser_eat(TOK_RPAREN, parser) == NULL) return NULL;
+			fn_call->as.fn_call.num_arguments = 0;
 			return fn_call;
 		}
 		fn_call->as.fn_call.first_arg = head;
-		tail = head;
+		tail            = head;
+		size_t num_args = 1;
 
 		while(!parser_done(parser) && parser_peek(parser)->type != TOK_RPAREN){
 			AST *expr = parse_expression(a, parent, parser);
 			if(parser_peek(parser)->type == TOK_COMMA) parser_eat(TOK_COMMA, parser);
 			tail->next = expr;
 			tail       = expr;
+			num_args++;
 		}
 
 		if(parser_eat(TOK_RPAREN, parser) == NULL) return NULL;
+		fn_call->as.fn_call.num_arguments = num_args;
 		return fn_call;
 }
 
@@ -1368,8 +1373,11 @@ int poly_is_zero(Polynomial *p){
 }
 
 void poly_update_degree(Polynomial *p){
-  size_t i = p->num_coeffs - 1;
-  while(ISZERO(p->coeffs[i])) i--;
+  int i = p->num_coeffs - 1;
+  while(ISZERO(p->coeffs[i]) && i > 0){
+		p->coeffs[i] = 0.0;
+		i--;
+	}
   p->num_coeffs = i + 1;
   p->deg        = i;
 }
@@ -1378,35 +1386,75 @@ Polynomial poly_monic(Arena *a, Polynomial p){
   return scale_poly(a, &p, 1.0/p.coeffs[p.num_coeffs - 1]);
 }
 
-Polynomial poly_mod(Arena *arena, Polynomial a, Polynomial b){
-  // a = bq + r
-  // Assumes deg(A) >= deg(B)
+int poly_divmod(Arena *arena, Polynomial a, Polynomial b, Polynomial *q_out, Polynomial *r_out){
+	poly_update_degree(&a);
+	poly_update_degree(&b);
 
-  Polynomial q = alloc_poly(arena, a.deg - b.deg);
-  Polynomial r = alloc_poly(arena, a.deg - b.deg);
+	if(poly_is_zero(&b)){
+		printf("Polynomial division by zero.\n");
+		return 1;
+	}
 
-  int i = a.num_coeffs - 1;
-  double coef = a.coeffs[i] / b.coeffs[b.num_coeffs - 1];
-  q.coeffs[i - b.deg] = coef;
+	if(a.deg < b.deg || poly_is_zero(&a)){
+		if(q_out) *q_out = poly_from_num(arena, 0.0);
+		if(r_out) *r_out = clone_poly(arena, &a);
+		return 0;
+	}
 
-  // for(int j = 0; j < i; j++){
-  //   r.coeffs[i] = 
-  // }
-  //
+	Polynomial q      = alloc_poly(arena, a.deg - b.deg);
+	Polynomial r      = clone_poly(arena, &a);
+	double lead_coeff = b.coeffs[b.num_coeffs - 1];
 
+	while(r.deg >= b.deg && !poly_is_zero(&r)){
+		size_t q_deg    = r.deg - b.deg;
+		double coef     = r.coeffs[r.deg] / lead_coeff;
+		q.coeffs[q_deg] = coef;
 
+		for(int j = 0; j < b.num_coeffs; j++){
+			r.coeffs[j + q_deg] -= coef * b.coeffs[j];
+		}
+
+		// To avoid floating point issues in the subtraction:
+		r.coeffs[r.deg] = 0.0;
+		poly_update_degree(&r);
+	}
+
+	if(q_out) *q_out = q;
+	if(r_out) *r_out = r;
+
+	return 0;
 }
 
-// Polynomial poly_gcd(Arena *arena, Polynomial a, Polynomial b){
-//   // Euclid'a gcd algorithm for polynomials
-//   while(!poly_is_zero(&b)){
-//     Polynomial r = poly_mod(a, b);
-//     a = b;
-//     b = r;
-//   }
-//   return poly_monic(arena, a);
-// }
-//
+Polynomial poly_gcd(Arena *arena, Polynomial a, Polynomial b){
+	// Euclid'a gcd algorithm for polynomials
+	poly_update_degree(&a);
+	poly_update_degree(&b);
+	Polynomial q;
+	Polynomial r;
+	while(!poly_is_zero(&b)){
+		poly_divmod(arena, a, b, &q, &r);
+		a = b;
+		b = r;
+	}
+	return poly_monic(arena, a);
+}
+
+TransferFunction tf_simplify(Arena *a, TransferFunction *tf){
+	Polynomial g = poly_gcd(a, tf->num, tf->den);
+
+	Polynomial reduced_num = tf->num;
+	Polynomial reduced_den = tf->den;
+	poly_divmod(a, tf->num, g, &reduced_num, NULL);
+	poly_divmod(a, tf->den, g, &reduced_den, NULL);
+
+	TransferFunction new_tf = {
+		.num = clone_poly(a, &reduced_num),
+		.den = clone_poly(a, &reduced_den),
+	};
+
+	return new_tf;
+}
+
 
 //============================
 //
@@ -1624,7 +1672,7 @@ Value div_poly_poly(Arena *a, Value *left, Value *right){
     tf.num = clone_poly(a, &p1);
     tf.den = clone_poly(a, &p2);
     
-		return make_transfer_function(tf);
+		return make_transfer_function(tf_simplify(a, &tf));
 }
 
 
@@ -1639,7 +1687,7 @@ Value ordered_div_num_poly(Arena *a, Value *left, Value *right){
       .den = p
     };
 
-		return make_transfer_function(tf);
+		return make_transfer_function(tf_simplify(a, &tf));
 }
 
 Value ordered_div_poly_num(Arena *a, Value *left, Value *right){
@@ -1679,7 +1727,7 @@ Value add_tf_tf(Arena *a, Value *left, Value *right){
       .den = BD.value.poly
     };
 
-    return make_transfer_function(tf);
+    return make_transfer_function(tf_simplify(a, &tf));
 }
 
 Value sub_tf_tf(Arena *a, Value *left, Value *right){
@@ -1706,7 +1754,7 @@ Value sub_tf_tf(Arena *a, Value *left, Value *right){
       .den = BD.value.poly
     };
 
-    return make_transfer_function(tf);
+    return make_transfer_function(tf_simplify(a, &tf));
 }
 
 Value mul_tf_tf(Arena *a, Value *left, Value *right){
@@ -1730,7 +1778,7 @@ Value mul_tf_tf(Arena *a, Value *left, Value *right){
       .den = BD.value.poly
     };
 
-    return make_transfer_function(tf);
+    return make_transfer_function(tf_simplify(a, &tf));
 }
 
 Value mul_tf_poly(Arena *a, Value *left, Value *right){
@@ -2259,8 +2307,9 @@ int import_script(Arena *a, Enviromnent *e, char* importer, char *path){
 }
 
 Value eval_func_call(Arena *a, Enviromnent *e, char *script_path, AST *fn, int *silent){
+	int i = 0;
 
-	if(fn->as.fn_call.num_arguments == 1 || 1){
+	if(fn->as.fn_call.num_arguments == 1){
 		Value val = eval_expr(a, e, script_path, fn->as.fn_call.first_arg, silent);
 
     // Utility
@@ -2304,10 +2353,44 @@ Value eval_func_call(Arena *a, Enviromnent *e, char *script_path, AST *fn, int *
 			}
 			printf("Unsupported operation!\n");
 			return make_nan();
+		}
 
+
+	}else if(fn->as.fn_call.num_arguments == 2){
+		Value first  = eval_expr(a, e, script_path, fn->as.fn_call.first_arg, silent);
+		Value second = eval_expr(a, e, script_path, fn->as.fn_call.first_arg->next, silent);
+
+		if(strcmp(fn->as.fn_call.fn_name, "polydiv") == 0) {
+			if(first.valueType == VALUE_POLYNOMIAL && second.valueType == VALUE_POLYNOMIAL){
+				Polynomial div;
+				poly_divmod(a, first.value.poly, second.value.poly, &div, NULL);
+				return make_poly(div);
+			}
+			printf("Unsupported operation, expected a polynomial!\n");
+			return make_nan();
+		}
+
+		if(strcmp(fn->as.fn_call.fn_name, "polymod") == 0) {
+			if(first.valueType == VALUE_POLYNOMIAL && second.valueType == VALUE_POLYNOMIAL){
+				Polynomial rem;
+				poly_divmod(a, first.value.poly, second.value.poly, NULL, &rem);
+				return make_poly(rem);
+			}
+			printf("Unsupported operation, expected a polynomial!\n");
+			return make_nan();
+		}
+
+		if(strcmp(fn->as.fn_call.fn_name, "polygcd") == 0) {
+			if(first.valueType == VALUE_POLYNOMIAL && second.valueType == VALUE_POLYNOMIAL){
+				Polynomial gcd = poly_gcd(a, first.value.poly, second.value.poly);
+				return make_poly(gcd);
+			}
+			printf("Unsupported operation, expected a polynomial!\n");
+			return make_nan();
 		}
 
 	}
+
 	return make_nan();
 }
 

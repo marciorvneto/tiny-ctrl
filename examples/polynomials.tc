@@ -1,0 +1,23 @@
+let a = poly([1, 0-1, 5, 7])
+print(a)
+
+let b = poly([0-1, 0-1, 1])
+print(b)
+
+print("r = a mod b:")
+let r = polymod(a,b)
+print(r)
+
+print("q = a div b:")
+let q = polydiv(a,b)
+print(q)
+
+print("Checking that a = qb + r:")
+print(q * b + r)
+
+print("gcd(a,b)")
+print(polygcd(a,b))
+
+print("Auto-simplification")
+
+print(poly([1,2,1])/poly([1,1]))
