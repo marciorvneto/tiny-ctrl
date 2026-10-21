@@ -152,6 +152,12 @@ int transfer_function_repr(Arena *a, TransferFunction *tf, char* buf, char* vari
 }
 
 
+char *alloc_string(Arena *a, size_t len){
+	char* new_string = arena_alloc(a, len + 1);
+	memset(new_string, 0, len + 1);
+	return new_string;
+}
+
 
 //============================== 
 //
@@ -168,6 +174,7 @@ int transfer_function_repr(Arena *a, TransferFunction *tf, char* buf, char* vari
 #define TOK_TYPE_LIST \
 	V(TOK_KEYWORD) \
 	V(TOK_ID) \
+	V(TOK_STRING) \
 	V(TOK_NUMBER) \
 	X(TOK_LPAREN) \
 	X(TOK_RPAREN) \
@@ -232,6 +239,15 @@ typedef struct {
 	size_t       offset;
 } Tokenizer;
 
+int tokenizer_eat_char(Tokenizer *tokenizer, char c){
+  const char *pos = tokenizer->source + tokenizer->offset;
+  if(pos[0] == c){
+    tokenizer->offset++;
+    return 0;
+  }
+  return 1;
+}
+
 
 size_t tokenizer_is_id(const char *pos){
 	if(!isalpha(pos[0])) return 0;
@@ -279,6 +295,31 @@ Token tokenizer_make_symbol(Arena *a, TokenType type, Tokenizer *tokenizer){
 	return tok;
 }
 
+Token tokenizer_eat_string(Arena *a, Tokenizer *tokenizer){
+	Token tok = {
+		tok.type  = TOK_STRING,
+		tok.value = NULL,
+	};
+  tokenizer_eat_char(tokenizer, '"');
+  size_t first_char_offset = tokenizer->offset;
+
+  char current;
+  while((current = (tokenizer->source + tokenizer->offset)[0]) != '"'){
+    tokenizer->offset++;
+  }
+
+  size_t last_char_offset = tokenizer->offset;
+  tokenizer_eat_char(tokenizer, '"');
+
+  size_t num_chars = last_char_offset - first_char_offset;
+
+  tok.value = arena_alloc(a, num_chars + 1);
+  strncpy(tok.value, tokenizer->source + first_char_offset, num_chars);
+
+	return tok;
+}
+
+
 
 int tokenize_line(Arena *a, const char *line, size_t n, Token *tokens , size_t *num_tokens){
 	Tokenizer tokenizer;
@@ -300,6 +341,14 @@ int tokenize_line(Arena *a, const char *line, size_t n, Token *tokens , size_t *
 			tokenizer.offset++;
 			continue;
 		}
+
+    // Check for strings
+    
+    if(pos[0] == '"'){
+      Token tok = tokenizer_eat_string(a, &tokenizer);
+      tokens[(*num_tokens)++] = tok;
+      continue;
+    }
 
 		// Check for keywords
 		if(
@@ -436,6 +485,7 @@ int tokenize_line(Arena *a, const char *line, size_t n, Token *tokens , size_t *
 	      X(AST_STATEMENT_LIST)    \
 	      X(AST_STATEMENT)         \
 	      X(AST_LITERAL)        \
+	      X(AST_ID)        \
 	      X(AST_ARRAY)        \
 	      X(AST_BINARY_OP)        \
 	      X(AST_FN_CALL)        \
@@ -516,11 +566,12 @@ typedef struct AST AST;
 typedef struct {
 	ValueType valueType;
 	union {
-		Polynomial poly;
-		TransferFunction         tf;
-		double     number;
-		char       *str;
-		Array      array;
+		Polynomial       poly;
+		TransferFunction tf;
+		double           number;
+		char             *str;
+		char             *id;
+		Array            array;
 	} value;
 } Value;
 
@@ -621,6 +672,13 @@ Token *parser_lookahed(Parser *parser){
 }
 
 
+AST *ast_make_string(Arena *a, size_t len){
+	AST *expr = ast_alloc(a, AST_LITERAL);
+	expr->as.literal.value.str = arena_alloc(a, len + 1);
+	expr->as.literal.valueType = VALUE_STRING;
+	return expr;
+}
+
 AST *ast_make_number(Arena *a, double number){
 	AST *expr = ast_alloc(a, AST_LITERAL);
 	expr->as.literal.value.number = number;
@@ -629,9 +687,9 @@ AST *ast_make_number(Arena *a, double number){
 }
 
 AST *ast_make_id(Arena *a, char *id){
-	AST *expr = ast_alloc(a, AST_LITERAL);
+	AST *expr = ast_alloc(a, AST_ID);
 	expr->as.literal.value.str = id;
-	expr->as.literal.valueType = VALUE_STRING;
+	expr->as.literal.valueType = VALUE_ID;
 	return expr;
 }
 
@@ -746,6 +804,13 @@ AST *parse_primary(Arena *a, AST *parent, Parser *parser) {
 		expr->parent = parent;
 		return expr;
 
+	} else if(current->type == TOK_STRING){
+		if(parser_eat(TOK_STRING, parser) == NULL) return NULL;
+    size_t len = strlen(current->value);
+		AST *expr = ast_make_string(a, len);
+    strcpy(expr->as.literal.value.str, current->value);
+		expr->parent = parent;
+		return expr;
 	} else if(current->type == TOK_LBRACKET)
 	{
 			AST *array = parse_array(a, parent, parser);
@@ -961,6 +1026,11 @@ void ast_print(AST *ast, int level){
 				ast_print(ast->as.statement.expr, level + 2);
 				break;
 			}
+		case AST_ID:
+			{
+        printf("%sID: %s\n", buf, ast->as.literal.value.id);
+				break;
+			}
 		case AST_LITERAL:
 			{
 				if(ast->as.literal.valueType == VALUE_STRING){
@@ -1008,14 +1078,16 @@ typedef struct {
 } Variable;
 
 typedef struct {
+  Arena    *persistent;
 	Variable *vars;
 	size_t   num_vars;
 } Enviromnent;
 
 Enviromnent env_create(Arena *a){
 	Enviromnent e;
-	e.vars     = arena_alloc(a, 32 * sizeof(Variable));
-	e.num_vars = 0;
+  e.persistent = a;
+	e.vars       = arena_alloc(a, 32 * sizeof(Variable));
+	e.num_vars   = 0;
 	return e;
 }
 
@@ -1114,11 +1186,26 @@ TransferFunction clone_tf(Arena *a, TransferFunction *tf){
   return tf_new;
 }
 
-
+char *clone_string(Arena *a, char *old){
+  size_t len = strlen(old);
+  char *new = arena_alloc(a, len + 1);
+  strcpy(new, old);
+  return new;
+}
 
 Value value_clone(Arena *a, Value *v){
   Value copy = *v;
   switch(v->valueType){
+    case VALUE_ID: 
+      {
+        copy.value.id = clone_string(a, v->value.id);
+        break;
+      }
+    case VALUE_STRING: 
+      {
+        copy.value.str = clone_string(a, v->value.str);
+        break;
+      }
     case VALUE_ARRAY: 
       {
         copy.value.array = clone_array(a, &v->value.array);
@@ -1167,6 +1254,13 @@ Value make_transfer_function(TransferFunction tf){
 	return v;
 }
 
+Value make_string(char *str){
+	Value v = {
+		.valueType = VALUE_STRING,
+		.value.str = str
+	};
+	return v;
+}
 
 
 
@@ -1228,6 +1322,29 @@ TransferFunction tf_from_poly(Arena *a, Polynomial *p){
 TransferFunction tf_from_num(Arena *a, double n){
 	Polynomial num_poly = poly_from_num(a, n);
 	return tf_from_poly(a, &num_poly);
+}
+
+char *cat_strings(Arena *a, char *str1, char *str2){
+  size_t len1    = strlen(str1);
+  size_t len2    = strlen(str2);
+  size_t new_len = len1 + len2;
+  char *new_str  = alloc_string(a, new_len);
+
+  for(size_t i = 0; i < len1; i++){
+    new_str[i] = str1[i];
+  }
+  for(size_t i = len1; i < new_len; i++){
+    new_str[i] = str2[i - len1];
+  }
+  new_str[new_len] = '\0';
+
+  return new_str;
+}
+
+char *string_from_num(Arena *a, double num){
+  char *num_str = arena_alloc(a, 1024);
+  sprintf(num_str, "%f", num);
+  return num_str;
 }
 
 
@@ -1378,11 +1495,12 @@ Value sub_num_poly(Arena *a, Value *left, Value *right){
 		double num          = left->value.number;
 		Polynomial  poly    = right->value.poly;
 
-    Polynomial new_poly = clone_poly(a, &poly);
+    Polynomial new_poly = scale_poly(a, &poly, -1.0);
 
-		new_poly.coeffs[0] = num - poly.coeffs[0];
+		new_poly.coeffs[0] = num + new_poly.coeffs[0];
 		return make_poly(new_poly);
 }
+
 Value sub_poly_num(Arena *a, Value *left, Value *right){
 		Polynomial  poly    = left->value.poly;
 		double num          = right->value.number;
@@ -1695,7 +1813,27 @@ Value div_tf_poly(Arena *a, Value *left, Value *right){
 		return mul_tf_tf(a, &tf_poly_inv_val, &tf_poly_val);
 }
 
+// ----------- Strings ------------------
 
+Value cat_num_str(Arena *a, Value *left, Value *right){
+  double num    = left->value.number;
+  char *str     = right->value.str;
+  char *num_str = string_from_num(a, num);
+  return make_string(cat_strings(a, num_str, str));
+}
+
+Value cat_str_num(Arena *a, Value *left, Value *right){
+  char *str  = left->value.str;
+  double num = right->value.number;
+  char *num_str = string_from_num(a, num);
+  return make_string(cat_strings(a, str, num_str));
+}
+
+Value cat_str_str(Arena *a, Value *left, Value *right){
+  char *str1 = left->value.str;
+  char *str2 = right->value.str;
+  return make_string(cat_strings(a, str1, str2));
+}
 
 
 static const BinaryFn binop_dispatch[OP_TYPE_LIST_COUNT][VALUE_TYPE_COUNT][VALUE_TYPE_COUNT] = {
@@ -1705,6 +1843,7 @@ static const BinaryFn binop_dispatch[OP_TYPE_LIST_COUNT][VALUE_TYPE_COUNT][VALUE
 			[VALUE_ARRAY]             = add_num_array,
 			[VALUE_POLYNOMIAL]        = add_num_poly,
 			[VALUE_TRANSFER_FUNCTION] = add_num_tf,
+      [VALUE_STRING]            = cat_num_str,
 			[VALUE_NAN]               = op_with_nan,
 		},
 		[VALUE_ARRAY] = {
@@ -1734,7 +1873,15 @@ static const BinaryFn binop_dispatch[OP_TYPE_LIST_COUNT][VALUE_TYPE_COUNT][VALUE
 			[VALUE_POLYNOMIAL]        = op_with_nan,
 			[VALUE_TRANSFER_FUNCTION] = op_with_nan,
 			[VALUE_NAN]               = op_with_nan,
-		}
+		},
+    [VALUE_STRING] = {
+			[VALUE_NUMBER]            = cat_str_num,
+			[VALUE_ARRAY]             = op_with_nan,
+			[VALUE_POLYNOMIAL]        = op_with_nan,
+			[VALUE_TRANSFER_FUNCTION] = op_with_nan,
+      [VALUE_STRING]            = cat_str_str,
+			[VALUE_NAN]               = op_with_nan,
+    },
 	},
 
 	[OP_MINUS] = {
@@ -1870,6 +2017,9 @@ static const BinaryFn binop_dispatch[OP_TYPE_LIST_COUNT][VALUE_TYPE_COUNT][VALUE
 
 
 Value resolve_variable(Arena *a, Enviromnent *e, Value *literal){
+    if(literal->valueType == VALUE_STRING){
+      return *literal;
+    }
 		int idx = -1;
 		if((idx  = env_variable_idx(a, e, literal->value.str)) < 0){
 			// Variable  not  found
@@ -1880,7 +2030,7 @@ Value resolve_variable(Arena *a, Enviromnent *e, Value *literal){
 		return *var->value;
 }
 
-Value eval_expr(Arena *a, Enviromnent *e, AST *expr);
+Value eval_expr(Arena *a, Enviromnent *e, AST *expr, int *silent);
 
 Value eval_binop(Arena *a, Enviromnent *e, AST *op, Value *raw_left, Value *raw_right){
 
@@ -1890,10 +2040,10 @@ Value eval_binop(Arena *a, Enviromnent *e, AST *op, Value *raw_left, Value *raw_
 	// Resolve variables
 	// TODO: Check if it begins  in quotation  marks?  For  now, assume
 	//       all strings  are  variable  names
-	if(left->valueType == VALUE_STRING){
+	if(left->valueType == VALUE_ID){
 		*left = resolve_variable(a, e, left);
 	}
-	if(right->valueType == VALUE_STRING){
+	if(right->valueType == VALUE_ID){
 		*right = resolve_variable(a, e, right);
 	}
 
@@ -1920,38 +2070,19 @@ Value eval_binop(Arena *a, Enviromnent *e, AST *op, Value *raw_left, Value *raw_
 
 }
 
-Value eval_func_call(Arena *a, Enviromnent *e, AST *fn){
-
-	if(fn->as.fn_call.num_arguments == 1 || 1){
-		// Basic math on numbers
-		Value val = eval_expr(a, e, fn->as.fn_call.first_arg);
-
-		if(strcmp(fn->as.fn_call.fn_name, "log") == 0)  { return make_num(logf(val.value.number));}
-		if(strcmp(fn->as.fn_call.fn_name, "exp") == 0)  { return make_num(expf(val.value.number));}
-		if(strcmp(fn->as.fn_call.fn_name, "sin") == 0)  { return make_num(sinf(val.value.number));}
-		if(strcmp(fn->as.fn_call.fn_name, "cos") == 0)  { return make_num(cosf(val.value.number));}
-		if(strcmp(fn->as.fn_call.fn_name, "sqr") == 0)  { return make_num(val.value.number * val.value.number);}
-		if(strcmp(fn->as.fn_call.fn_name, "sqrt") == 0) { return make_num(sqrtf(val.value.number));}
-
-
-		if(strcmp(fn->as.fn_call.fn_name, "poly") == 0) {
-			if(val.valueType == VALUE_ARRAY){
-        int err;
-        Polynomial p = poly_new(a, val.value.array.nums, val.value.array.size);
-				return make_poly(p);
-			}
-			printf("Unsupported operation!\n");
-			return make_nan();
-
-		}
-
-	}
-	return make_nan();
-}
-
 void print_value(Arena *a, Enviromnent *e, Value *value){
   printf("\n");
 	switch(value->valueType){
+		case VALUE_ID:
+			{
+				Value resolved = resolve_variable(a, e, value);
+				if(resolved.valueType == VALUE_NAN){
+					printf("%s\n", value->value.id);
+				}else{
+					print_value(a, e, &resolved);
+				}
+				break;
+			}
 		case VALUE_NUMBER:
 			{
 				printf("%.4f\n", value->value.number);
@@ -1959,12 +2090,7 @@ void print_value(Arena *a, Enviromnent *e, Value *value){
 			}
 		case VALUE_STRING:
 			{
-				Value resolved = resolve_variable(a, e, value);
-				if(resolved.valueType == VALUE_NAN){
-					printf("%s\n", value->value.str);
-				}else{
-					print_value(a, e, &resolved);
-				}
+        printf("%s\n", value->value.str);
 				break;
 			}
 		case VALUE_ARRAY:
@@ -2002,17 +2128,63 @@ void print_value(Arena *a, Enviromnent *e, Value *value){
   printf("\n");
 }
 
-Value eval_expr(Arena *a, Enviromnent *e, AST *expr){
+Value eval_func_call(Arena *a, Enviromnent *e, AST *fn, int *silent){
+
+	if(fn->as.fn_call.num_arguments == 1 || 1){
+		Value val = eval_expr(a, e, fn->as.fn_call.first_arg, silent);
+
+    // Utility
+
+		if(strcmp(fn->as.fn_call.fn_name, "print") == 0) {
+      print_value(a, e, &val);
+      *silent = 1;
+			return make_num(0);
+		}
+
+
+		// Basic math on numbers
+
+		if(strcmp(fn->as.fn_call.fn_name, "log") == 0)  { return make_num(logf(val.value.number));}
+		if(strcmp(fn->as.fn_call.fn_name, "exp") == 0)  { return make_num(expf(val.value.number));}
+		if(strcmp(fn->as.fn_call.fn_name, "sin") == 0)  { return make_num(sinf(val.value.number));}
+		if(strcmp(fn->as.fn_call.fn_name, "cos") == 0)  { return make_num(cosf(val.value.number));}
+		if(strcmp(fn->as.fn_call.fn_name, "sqr") == 0)  { return make_num(val.value.number * val.value.number);}
+		if(strcmp(fn->as.fn_call.fn_name, "sqrt") == 0) { return make_num(sqrtf(val.value.number));}
+
+
+		if(strcmp(fn->as.fn_call.fn_name, "poly") == 0) {
+			if(val.valueType == VALUE_ARRAY){
+        int err;
+        Polynomial p = poly_new(a, val.value.array.nums, val.value.array.size);
+				return make_poly(p);
+			}
+			printf("Unsupported operation!\n");
+			return make_nan();
+
+		}
+
+	}
+	return make_nan();
+}
+
+
+Value eval_expr(Arena *a, Enviromnent *e, AST *expr, int *silent){
 	Value value = {0};
 
 	switch(expr->type){
+		case AST_ID:
+			{
+				value = resolve_variable(a, e, &expr->as.literal);
+				break;
+			}
 		case AST_LITERAL:
 			{
-				Value *literal = &expr->as.literal;
-				if(literal->valueType == VALUE_STRING){
-					*literal = resolve_variable(a, e, literal);
+
+				Value literal = expr->as.literal;
+				if(literal.valueType == VALUE_STRING){
+					literal = resolve_variable(a, e, &expr->as.literal);
 				}
-				value = *literal;
+				value = literal;
 				break;
 			}
 		case AST_ARRAY:
@@ -2023,7 +2195,7 @@ Value eval_expr(Arena *a, Enviromnent *e, AST *expr){
 				AST *item              = expr->as.array.first;
 				size_t i               = 0;
 				while(item != NULL){
-					Value item_value = eval_expr(a, e, item);
+					Value item_value = eval_expr(a, e, item, silent);
 					// TODO: check if it really is a number
 					value.value.array.nums[i++] = item_value.value.number;
 					item                        = item->next;
@@ -2032,14 +2204,14 @@ Value eval_expr(Arena *a, Enviromnent *e, AST *expr){
 			}
 		case AST_BINARY_OP:
 			{
-				Value left  = eval_expr(a,  e, expr->as.binop.left);
-				Value right = eval_expr(a,  e, expr->as.binop.right);
+				Value left  = eval_expr(a,  e, expr->as.binop.left, silent);
+				Value right = eval_expr(a,  e, expr->as.binop.right, silent);
 				value       = eval_binop(a, e, expr, &left, &right);
 				break;
 			}
 		case AST_FN_CALL:
 			{
-				value       = eval_func_call(a, e, expr);
+				value       = eval_func_call(a, e, expr, silent);
 				break;
 			}
 		default:
@@ -2052,12 +2224,14 @@ Value eval_expr(Arena *a, Enviromnent *e, AST *expr){
 	return value;
 }
 
-int eval_stmt(Arena *a, Arena* temp_arena, AST *ast, Enviromnent *e, AST *stmt){
+int eval_stmt(Arena* temp_arena, AST *ast, Enviromnent *e, AST *stmt){
+
+  int silent = 0;
 
 	if(stmt->as.statement.type == STATEMENT_EXPR){
     SCRATCH_SCOPE(temp_arena){
-      Value result = eval_expr(temp_arena, e, stmt->as.statement.expr);
-      print_value(temp_arena, e, &result);
+      Value result = eval_expr(temp_arena, e, stmt->as.statement.expr, &silent);
+      if(!silent) print_value(temp_arena, e, &result);
     }
 		return 0;
 	}
@@ -2065,16 +2239,16 @@ int eval_stmt(Arena *a, Arena* temp_arena, AST *ast, Enviromnent *e, AST *stmt){
 	if(stmt->as.statement.type == STATEMENT_DECL_ASSIGN){
 		char *dst = stmt->as.statement.dst;
 		// Check if it hasn't been defined before
-		if(env_variable_idx(a, e, dst)  >= 0){
+		if(env_variable_idx(e->persistent, e, dst)  >= 0){
 			printf("Variable %s has already been defined\n", dst);
 			return 1;
 		}
 
 		//  TODO: Check if it's not null
     SCRATCH_SCOPE(temp_arena){
-      Value value = eval_expr(temp_arena, e, stmt->as.statement.expr);
-      Value saved = value_clone(a, &value);
-      env_set_variable(a, e, dst, &saved);
+      Value value = eval_expr(temp_arena, e, stmt->as.statement.expr, &silent);
+      Value saved = value_clone(e->persistent, &value);
+      env_set_variable(e->persistent, e, dst, &saved);
     }
 		return 0;
 	}
@@ -2082,16 +2256,16 @@ int eval_stmt(Arena *a, Arena* temp_arena, AST *ast, Enviromnent *e, AST *stmt){
 	if(stmt->as.statement.type == STATEMENT_ASSIGN){
 		char *dst = stmt->as.statement.dst;
 		// Check if it has been defined before
-		if(env_variable_idx(a, e, dst)  < 0){
+		if(env_variable_idx(e->persistent, e, dst)  < 0){
 			printf("Undefined variable %s\n", dst);
 			return 1;
 		}
 
 		//  TODO: Check if it's not null
     SCRATCH_SCOPE(temp_arena){
-      Value value = eval_expr(temp_arena, e, stmt->as.statement.expr);
-      Value saved = value_clone(a, &value);
-      env_set_variable(a, e, dst, &saved);
+      Value value = eval_expr(temp_arena, e, stmt->as.statement.expr, &silent);
+      Value saved = value_clone(e->persistent, &value);
+      env_set_variable(e->persistent, e, dst, &saved);
     }
 		return 0;
 	}
@@ -2099,12 +2273,12 @@ int eval_stmt(Arena *a, Arena* temp_arena, AST *ast, Enviromnent *e, AST *stmt){
 	return 0;
 }
 
-int run_ast(Arena *a, Arena* temp_arena, AST *ast, Enviromnent *e){
+int run_ast(Arena* temp_arena, AST *ast, Enviromnent *e){
 
 	AST *stmt = ast->as.program.statements_list;
 
 	while(stmt != NULL){
-		int status = eval_stmt(a, temp_arena, ast, e, stmt);
+		int status = eval_stmt(temp_arena, ast, e, stmt);
 		if(status != 0) return status;
 		stmt = stmt->next;
 	}
@@ -2233,7 +2407,7 @@ int launch_repl(Arena *temp_arena, Arena *a){
 				free(buffer);
 				return parse_code;
 			}
-			if(!skip_ast_run) run_ast(a, temp_arena, ast, &e);
+			if(!skip_ast_run) run_ast(temp_arena, ast, &e);
 		}
 		if(parse_code != 0){
 			printf("Exiting with code %i...\n", parse_code);
@@ -2274,7 +2448,7 @@ int run_program(Arena *temp_arena, Arena *a, FILE *f){
 				free(line);
 				return parse_code;
 			}
-			if(!skip_ast_run) run_ast(a, temp_arena, ast, &e);
+			if(!skip_ast_run) run_ast(temp_arena, ast, &e);
 		}
 		if(parse_code != 0){
 			printf("Exiting with code %i...\n", parse_code);
@@ -2293,9 +2467,8 @@ int main(int argc, char **argv){
 	ssize_t last_good = 0;
 	int parse_code    = 0;
 
-	Arena temp_arena  = arena_create(1024 * 1024);      // 1 MB for now
-	Arena a           = arena_create(32 * 1024 * 1024); // 32 MB for now
-	Enviromnent e     = env_create(&a);
+	Arena temp_arena = arena_create(1024 * 1024);      // 1 MB for now
+	Arena a          = arena_create(32 * 1024 * 1024); // 32 MB for now
 
 	int skip_ast_run  = 0;
 

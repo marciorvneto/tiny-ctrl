@@ -51,6 +51,7 @@ EXPO            = PRIMARY ^ EXPO
 
 PRIMARY         = number
   					    | id
+  					    | '"' + char* + '"'
   					    | id "(" ARGS_LIST ")"
   					    | "[" ARGS_LIST "]"
   					    | "(" EXPRESSION ")"

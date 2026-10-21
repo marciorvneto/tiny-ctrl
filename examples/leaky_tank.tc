@@ -32,3 +32,4 @@ let W = (C * H) / (1 + C * H)
 
 W
 
+print(W)
