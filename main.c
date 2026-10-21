@@ -43,6 +43,7 @@ void *arena_alloc(Arena *a, size_t size){
 		return NULL;
 	}
 	a->offset = aligned_offset + size;
+	memset(a->base + aligned_offset, 0, size);
 	return a->base + aligned_offset;
 }
 
@@ -84,6 +85,7 @@ Polynomial alloc_poly(Arena *a, size_t deg){
 	p.num_coeffs = deg + 1;
 	p.deg        = deg;
 	p.coeffs     = arena_alloc(a, p.num_coeffs * sizeof(double));
+	memset(p.coeffs, 0, p.num_coeffs * sizeof(double));
 	return p;
 }
 
@@ -289,6 +291,10 @@ int tokenize_line(Arena *a, const char *line, size_t n, Token *tokens , size_t *
 
 	while(tokenizer.offset < tokenizer.size){
 		const char *pos = tokenizer.source + tokenizer.offset;
+
+		if(pos[0] == '/' && pos[1] == '/'){
+			break;
+		}
 
 		if(isspace(pos[0])){
 			tokenizer.offset++;
@@ -1642,6 +1648,27 @@ Value div_num_tf(Arena *a, Value *left, Value *right){
     return make_transfer_function(new_tf);
 }
 
+Value div_tf_num(Arena *a, Value *left, Value *right){
+    double num          = left->value.number;
+    TransferFunction tf = right->value.tf;
+
+		TransferFunction new_tf = scale_tf(a, &tf, 1.0/num);
+
+    return make_transfer_function(new_tf);
+}
+
+Value div_tf_tf(Arena *a, Value *left, Value *right){
+    TransferFunction tf1 = left->value.tf;
+    TransferFunction tf2 = right->value.tf;
+
+		TransferFunction inv_tf2 = tf_invert(a, &tf2);
+
+		Value tf1_val     = make_transfer_function(tf1);
+		Value inv_tf2_val = make_transfer_function(inv_tf2);
+
+    return mul_tf_tf(a, &tf1_val, &inv_tf2_val);
+}
+
 Value div_poly_tf(Arena *a, Value *left, Value *right){
 		Polynomial p        = left->value.poly;
 		TransferFunction tf = right->value.tf;
@@ -1654,6 +1681,20 @@ Value div_poly_tf(Arena *a, Value *left, Value *right){
 
 		return mul_tf_tf(a, &tf_inv_val, &tf_poly_val);
 }
+
+Value div_tf_poly(Arena *a, Value *left, Value *right){
+		TransferFunction tf = left->value.tf;
+		Polynomial p        = right->value.poly;
+
+		TransferFunction tf_poly     = tf_from_poly(a, &p);
+		TransferFunction tf_poly_inv = tf_invert(a, &tf_poly);
+		
+		Value tf_poly_val     = make_transfer_function(tf_poly);
+		Value tf_poly_inv_val = make_transfer_function(tf_poly_inv);
+
+		return mul_tf_tf(a, &tf_poly_inv_val, &tf_poly_val);
+}
+
 
 
 
@@ -1792,6 +1833,13 @@ static const BinaryFn binop_dispatch[OP_TYPE_LIST_COUNT][VALUE_TYPE_COUNT][VALUE
 			[VALUE_ARRAY]             = op_with_nan,
       [VALUE_POLYNOMIAL]        = div_poly_poly,
 			[VALUE_TRANSFER_FUNCTION] = div_poly_tf,
+			[VALUE_NAN]               = op_with_nan,
+    },
+		[VALUE_TRANSFER_FUNCTION] = {
+			[VALUE_NUMBER]            = div_tf_num,
+			[VALUE_ARRAY]             = op_with_nan,
+      [VALUE_POLYNOMIAL]        = div_tf_poly,
+			[VALUE_TRANSFER_FUNCTION] = div_tf_tf,
 			[VALUE_NAN]               = op_with_nan,
     },
 		[VALUE_NAN] = {
@@ -2065,7 +2113,7 @@ int run_ast(Arena *a, Arena* temp_arena, AST *ast, Enviromnent *e){
 }
 
 
-int parse_line(Arena *a, Enviromnent *e,  const char *line, AST *ast, int *done){
+int parse_line(Arena *a, Enviromnent *e,  const char *line, AST *ast, int *done, int *stop){
 	// Null-terminated
 
   // --------- Basic commands -----------
@@ -2079,7 +2127,8 @@ int parse_line(Arena *a, Enviromnent *e,  const char *line, AST *ast, int *done)
 	if(strcmp(line, "q") == 0){
 		printf("\nExiting...\n");
 		*done = 1;
-		exit(0);
+		*stop = 1;
+		return 0;
 	}
 
 	if(strcmp(line, "ls") == 0){
@@ -2138,8 +2187,107 @@ size_t trim_end(char *str){
 //
 //============================== 
 
-int main(){
+void print_usage(){
+	printf("Usage: tctrl [FILE]\n");
+	printf("Runs a tiny-ctrl script located at FILE\n");
+	printf("If a FILE argument isn't supplied, a repl is launched\n");
+}
+
+void cleanup(Arena *temp_arena, Arena *a){
+	arena_destroy(temp_arena);
+	arena_destroy(a);
+}
+
+int launch_repl(Arena *temp_arena, Arena *a){
 	char *buffer      = NULL; // Null-terminated
+	size_t size       = 0;
+	ssize_t nread     = 0;
+	ssize_t last_good = 0;
+	int parse_code    = 0;
+	int stop          = 0;
+
+	Enviromnent e     = env_create(a);
+
+	int skip_ast_run  = 0;
+	while(1){
+
+		printf("tiny-ctrl> ");
+		nread = getline(&buffer, &size, stdin);
+		if(nread == -1){
+			printf("\nNo lines were read. Exiting...\n");
+			break;
+		}
+
+		// Trimming the endline characters
+		last_good         = strcspn(buffer, "\r\n");
+		buffer[last_good] = '\0';
+
+		trim_end(buffer);
+
+		skip_ast_run      = 0;
+
+		SCRATCH_SCOPE(temp_arena){
+			AST *ast   = arena_alloc(temp_arena, sizeof(AST));
+			parse_code = parse_line(temp_arena, &e,  buffer, ast, &skip_ast_run, &stop);
+			if(stop){
+				free(buffer);
+				return parse_code;
+			}
+			if(!skip_ast_run) run_ast(a, temp_arena, ast, &e);
+		}
+		if(parse_code != 0){
+			printf("Exiting with code %i...\n", parse_code);
+			break;
+		}
+
+	}
+	free(buffer);
+	return parse_code;
+}
+
+int run_program(Arena *temp_arena, Arena *a, FILE *f){
+	char *line = NULL;
+	size_t len = 0;
+	ssize_t read = 0;
+
+	Enviromnent e     = env_create(a);
+
+	ssize_t last_good = 0;
+	int parse_code    = 0;
+	int stop          = 0;
+
+	int skip_ast_run  = 0;
+
+	while((read = getline(&line, &len, f)) != -1){
+		// Trimming the endline characters
+		last_good       = strcspn(line, "\r\n");
+		line[last_good] = '\0';
+
+		trim_end(line);
+
+		skip_ast_run      = 0;
+
+		SCRATCH_SCOPE(temp_arena){
+			AST *ast   = arena_alloc(temp_arena, sizeof(AST));
+			parse_code = parse_line(temp_arena, &e,  line, ast, &skip_ast_run, &stop);
+			if(stop){
+				free(line);
+				return parse_code;
+			}
+			if(!skip_ast_run) run_ast(a, temp_arena, ast, &e);
+		}
+		if(parse_code != 0){
+			printf("Exiting with code %i...\n", parse_code);
+			break;
+		}
+	}
+
+	free(line);
+	return parse_code;
+}
+
+
+int main(int argc, char **argv){
 	size_t size       = 0;
 	ssize_t nread     = 0;
 	ssize_t last_good = 0;
@@ -2151,43 +2299,33 @@ int main(){
 
 	int skip_ast_run  = 0;
 
-	// const char *line = "let p = (((poly() + sqr(3) + (5))))";
-	// parse_line(&a, line);
+	if(argc < 2){
+		// REPL
+		int code = launch_repl(&temp_arena, &a);
+		cleanup(&temp_arena, &a);
+		return code;
+	}else{
 
-	 while(1){
-
-	 	printf("tiny-ctrl> ");
-	 	nread = getline(&buffer, &size, stdin);
-	 	if(nread == -1){
-	 		printf("\nExiting...\n");
-	 		break;
-	 	}
-
-	 	// Trimming the endline characters
-	 	last_good         = strcspn(buffer, "\r\n");
-	 	buffer[last_good] = '\0';
-
-		trim_end(buffer);
-
-		skip_ast_run      = 0;
-
-		SCRATCH_SCOPE(&temp_arena){
-			AST *ast   = arena_alloc(&temp_arena, sizeof(AST));
-			parse_code = parse_line(&temp_arena, &e,  buffer, ast, &skip_ast_run);
-			if(!skip_ast_run) run_ast(&a, &temp_arena, ast, &e);
+		if(strcmp(argv[1], "-h") == 0){
+			print_usage();
+			cleanup(&temp_arena, &a);
+			exit(0);
 		}
-	 	if(parse_code != 0){
-	 		printf("Exiting with code %i...\n", parse_code);
-	 		break;
-	 	}
 
-	 }
-  
-	 free(buffer);
-	arena_destroy(&temp_arena);
-	arena_destroy(&a);
-	if(parse_code != 0){
-		exit(parse_code);
+		// Launch a program
+
+		FILE *f = fopen(argv[1], "r");
+
+		if(f != NULL){
+			int code = run_program(&temp_arena, &a, f);
+			cleanup(&temp_arena, &a);
+			return code;
+		}else{
+			fprintf(stderr, "Could not load file at %s\n", argv[1]);
+		}
+
+		fclose(f);
+
 	}
 
 	return 0;

@@ -1,0 +1,34 @@
+// -----------------------------------------------------
+// 
+//  LEAKY TANK
+//  By: Marcio R. V. Neto, 2026
+// 
+//  This script creates the transfer function for a
+//  first-order leaky tank coupled with a PID
+//  controller.
+// 
+// -----------------------------------------------------
+
+// PID gains
+
+let kp = 0.1
+let ki = 0.2
+let kd = 0.3
+
+// Leaky tank constant and transfer function
+let tau = 0.01
+let H = 1 / poly([1, tau])
+
+H
+
+// PID transfer function
+let s = poly([0, 1])
+let C = kp + ki/s + kd*s
+
+C
+
+// Feedback system
+let W = (C * H) / (1 + C * H)
+
+W
+
