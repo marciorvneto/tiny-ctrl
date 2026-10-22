@@ -1,7 +1,7 @@
-let a = poly([1, 0-1, 5, 7])
+let a = poly([1, -1, 5, 7])
 print(a)
 
-let b = poly([0-1, 0-1, 1])
+let b = poly([-1, -1, 1])
 print(b)
 
 print("r = a mod b:")
@@ -21,3 +21,8 @@ print(polygcd(a,b))
 print("Auto-simplification")
 
 print(poly([1,2,1])/poly([1,1]))
+
+print("Evaluating polynomials")
+let P       = poly([1,2,3,4])
+let value   = P(2)
+print("P(2) = " + value)

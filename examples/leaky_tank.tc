@@ -34,3 +34,11 @@ let W = (C * H) / (1 + C * H)
 
 print("The feedback loop's TF:")
 print(W)
+
+print("Evaluating gains:")
+
+let W0   = W(0)
+let Winf = W(1000000)
+
+print("W(0)   = " + W0)
+print("W(inf) = " + Winf)
