@@ -2778,9 +2778,9 @@ size_t trim_end(char *str){
 //============================== 
 
 void print_usage(){
-	printf("Usage: tctrl [FILE]\n");
-	printf("Runs a tiny-ctrl script located at FILE\n");
-	printf("If a FILE argument isn't supplied, a repl is launched\n");
+	printf("Usage: tctl [FILE]\n");
+	printf("    Runs a tiny-ctrl script located at FILE\n");
+	printf("    If a FILE argument isn't supplied, a repl is launched\n");
 }
 
 void cleanup(Arena *temp_arena, Arena *a){
@@ -2892,7 +2892,7 @@ int main(int argc, char **argv){
 		return code;
 	}else{
 
-		if(strcmp(argv[1], "-h") == 0){
+		if(strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0){
 			print_usage();
 			cleanup(&temp_arena, &a);
 			exit(0);
