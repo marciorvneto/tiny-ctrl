@@ -189,7 +189,7 @@ char *alloc_string(Arena *a, size_t len){
 	V(TOK_MINUS) \
 	V(TOK_MUL) \
 	V(TOK_DIV) \
-	V(TOK_POW) \
+	V(TOK_CARET) \
 	V(TOK_AT) \
 	X(TOK_TYPE_COUNT)
 
@@ -428,6 +428,11 @@ int tokenize_line(Arena *a, const char *line, size_t n, Token *tokens , size_t *
 				tokens[(*num_tokens)++] = tok;
 				continue;
 			};
+			if(tokenizer_is_symbol(pos, "^")) {
+				Token tok = tokenizer_make_symbol(a, TOK_CARET, &tokenizer);
+				tokens[(*num_tokens)++] = tok;
+				continue;
+			};
 			if(tokenizer_is_symbol(pos, "@")) {
 				Token tok = tokenizer_make_symbol(a, TOK_AT, &tokenizer);
 				tokens[(*num_tokens)++] = tok;
@@ -490,6 +495,7 @@ int tokenize_line(Arena *a, const char *line, size_t n, Token *tokens , size_t *
 	      X(AST_LITERAL)        \
 	      X(AST_ID)        \
 	      X(AST_ARRAY)        \
+	      X(AST_UNARY_OP)        \
 	      X(AST_BINARY_OP)        \
 	      X(AST_FN_CALL)        \
 	      X(AST_ARGS_LIST)         \
@@ -531,13 +537,13 @@ void op_type_repr(OpType type, char *buf){
 
 OpType op_from_tok(TokenType type){
 	switch (type) {
-		case TOK_PLUS:  return OP_PLUS;
-	  case TOK_MINUS: return OP_MINUS;
-	  case TOK_MUL:   return OP_MUL;
-	  case TOK_DIV:   return OP_DIV;
-	  case TOK_POW:   return OP_POW;
-	  case TOK_AT:    return OP_MMUL;
-		default:        UNREACHABLE("op_from_tok");
+		case TOK_PLUS:    return OP_PLUS;
+	  case TOK_MINUS:   return OP_MINUS;
+	  case TOK_MUL:     return OP_MUL;
+	  case TOK_DIV:     return OP_DIV;
+	  case TOK_CARET:   return OP_POW;
+	  case TOK_AT:      return OP_MMUL;
+		default:          UNREACHABLE("op_from_tok");
 	}
 }
 
@@ -615,6 +621,11 @@ struct AST {
 			AST    *left;
 			AST    *right;
 		} binop;
+
+		struct {
+			OpType op;
+			AST    *arg;
+		} unop;
 	} as;
 };
 
@@ -712,6 +723,14 @@ AST *ast_make_fn_call(Arena *a, const char *fn_name){
 	return fn_call;
 }
 
+AST *ast_make_unop(Arena *a, OpType op){
+	AST *unop = ast_alloc(a, AST_UNARY_OP); 
+	unop->as.unop.op  = op;
+	unop->as.unop.arg = NULL;
+	return unop;
+}
+
+
 AST *ast_make_binop(Arena *a, OpType op){
 	AST *binop = ast_alloc(a, AST_BINARY_OP); 
 	binop->as.binop.left = NULL;
@@ -729,6 +748,7 @@ AST *ast_make_statement(Arena *a, StatementType type){
 
 AST *parse_expression(Arena *a, AST *parent, Parser *parser); // Forward declaration
 AST *parse_term(Arena *a, AST *parent, Parser *parser);
+AST *parse_unary(Arena *a, AST *parent, Parser *parser);
 AST *parse_expo(Arena *a, AST *parent, Parser *parser);
 AST *parse_primary(Arena *a, AST *parent, Parser *parser);
 AST *parse_array(Arena *a, AST *parent, Parser *parser);
@@ -847,7 +867,7 @@ AST *parse_primary(Arena *a, AST *parent, Parser *parser) {
 }
 
 AST *parse_term(Arena *a, AST *parent, Parser *parser){
-	AST *left = parse_expo(a, parent, parser);
+	AST *left = parse_unary(a, parent, parser);
 	while(!parser_done(parser) &&
 			(parser_peek(parser)->type == TOK_MUL ||
 			 parser_peek(parser)->type == TOK_AT  ||
@@ -857,7 +877,7 @@ AST *parse_term(Arena *a, AST *parent, Parser *parser){
 	{
 		Token *op_tok         = parser_eat(parser_peek(parser)->type, parser);
 		AST   *binop          = ast_make_binop(a, op_from_tok(op_tok->type));
-		AST   *right          = parse_expo(a, parent, parser);
+		AST   *right          = parse_unary(a, parent, parser);
 		binop->as.binop.left  = left;
 		binop->as.binop.right = right;
 		left = binop;
@@ -865,12 +885,31 @@ AST *parse_term(Arena *a, AST *parent, Parser *parser){
 	return left;
 }
 
+AST *parse_unary(Arena *a, AST *parent, Parser *parser){
+  if(parser_peek(parser)->type == TOK_PLUS || parser_peek(parser)->type == TOK_MINUS){
+    OpType op;
+
+    if(parser_peek(parser)->type == TOK_PLUS)  op = OP_PLUS;
+    else if(parser_peek(parser)->type == TOK_MINUS) op = OP_MINUS;
+    else return NULL;
+
+    parser->offset++;
+
+    AST *unop         = ast_make_unop(a, op)  ;
+    unop->as.unop.arg = parse_unary(a, unop, parser);
+
+    return unop;
+  }
+  return parse_expo(a, parent, parser);
+
+}
+
 AST *parse_expo(Arena *a, AST *parent, Parser *parser){
 	AST *primary = parse_primary(a, parent, parser);
-	if(!parser_done(parser) && parser_peek(parser)->type == TOK_POW){
+	if(!parser_done(parser) && parser_peek(parser)->type == TOK_CARET){
 		Token *op_tok         = parser_eat(parser_peek(parser)->type, parser);
 		AST   *binop          = ast_make_binop(a, op_from_tok(op_tok->type));
-		AST   *right          = parse_expo(a, parent, parser);
+		AST   *right          = parse_unary(a, parent, parser);
 		binop->as.binop.left  = primary;
 		binop->as.binop.right = right;
 		return binop;
@@ -1292,6 +1331,14 @@ Polynomial poly_from_num(Arena *a, double n){
 	return poly;
 }
 
+Array scale_array(Arena *a, Array *arr, double x){
+  Array arr_new = clone_array(a, arr);
+	for(size_t i = 0; i < arr_new.size; i++){
+		arr_new.nums[i] *= x;
+	}
+	return arr_new;
+}
+
 Polynomial scale_poly(Arena *a, Polynomial *p, double x){
 	Polynomial poly = alloc_poly(a, p->deg);
 	for(size_t i = 0; i < poly.num_coeffs; i++){
@@ -1425,6 +1472,48 @@ int poly_divmod(Arena *arena, Polynomial a, Polynomial b, Polynomial *q_out, Pol
 	return 0;
 }
 
+double poly_horner(Polynomial p, double x){
+
+  // P(x) = a0 + a1*x + a2*x^2 + ... + an*x^n
+  // P(x) = a0 + x * (a1 + x * (a2 + x * (a3) ))
+
+  if(p.deg == 0) return p.coeffs[0];
+
+  double val = p.coeffs[p.deg];
+  for (int i = (int)p.deg - 1; i >= 0; i--) {
+    val = val * x + p.coeffs[i];
+  }
+
+  return val;
+
+}
+
+void poly_horner_with_derivative(Polynomial p, double x, double *val_out, double *der_out){
+
+  // P(x)  = a0 + a1*x + a2*x^2 + ... + an*x^n
+  // P(x)  = a0 + x * (a1 + x * (a2 + x * (a3) ))
+  // P'(x) = a1 + 2a2*x + 3a3*x^2 + 4a4x^3 + ... + n * an*x^n - 1
+  // P'(x) = a1 + x * (2a2 + x * (3a3 + x * (4a4)))
+
+  if(p.deg == 0) { 
+    if(val_out) *val_out = p.coeffs[0];
+    if(der_out) *der_out = 0;
+    return;
+  }
+
+  double val = p.coeffs[p.deg];
+  double der = 0.0;
+
+  for (int i = (int)p.deg - 1; i >= 0; i--) {
+    der = der * x + val;
+    val = val * x + p.coeffs[i];
+  }
+
+  if(val_out) *val_out = val;
+  if(der_out) *der_out = der;
+
+}
+
 Polynomial poly_gcd(Arena *arena, Polynomial a, Polynomial b){
 	// Euclid'a gcd algorithm for polynomials
 	poly_update_degree(&a);
@@ -1455,14 +1544,77 @@ TransferFunction tf_simplify(Arena *a, TransferFunction *tf){
 	return new_tf;
 }
 
+//============================
+//
+//   Unary Operations
+//
+//============================
+
+typedef Value (*UnaryFn)(Arena *a, Value *arg);
+
+Value unop_with_nan(Arena *a, Value *arg){
+	return make_nan();
+}
+
+Value unop_num_plus(Arena *a, Value *arg){
+	return make_num(arg->value.number);
+}
+Value unop_arr_plus(Arena *a, Value *arg){
+	return make_array(arg->value.array);
+}
+Value unop_poly_plus(Arena *a, Value *arg){
+	return make_poly(arg->value.poly);
+}
+Value unop_tf_plus(Arena *a, Value *arg){
+	return make_transfer_function(arg->value.tf);
+}
+
+Value unop_num_minus(Arena *a, Value *arg){
+	return make_num(-1.0 * arg->value.number);
+}
+Value unop_arr_minus(Arena *a, Value *arg){
+  Array arr = scale_array(a, &arg->value.array, -1.0);
+	return make_array(arr);
+}
+Value unop_poly_minus(Arena *a, Value *arg){
+	return make_poly(scale_poly(a, &arg->value.poly, -1.0));
+}
+Value unop_tf_minus(Arena *a, Value *arg){
+	return make_transfer_function(scale_tf(a, &arg->value.tf, -1.0));
+}
+
+
+
+static const UnaryFn unop_dispatch[OP_TYPE_LIST_COUNT][VALUE_TYPE_COUNT] = {
+	[OP_PLUS] = {
+		[VALUE_NUMBER]            = unop_num_plus,
+		[VALUE_ARRAY]             = unop_arr_plus,
+		[VALUE_POLYNOMIAL]        = unop_poly_plus,
+    [VALUE_TRANSFER_FUNCTION] = unop_tf_plus,
+		[VALUE_NAN]               = unop_with_nan,
+    [VALUE_STRING]            = unop_with_nan,
+	},
+
+	[OP_MINUS] = {
+		[VALUE_NUMBER]            = unop_num_minus,
+		[VALUE_ARRAY]             = unop_arr_minus,
+		[VALUE_POLYNOMIAL]        = unop_poly_minus,
+    [VALUE_TRANSFER_FUNCTION] = unop_tf_minus,
+		[VALUE_NAN]               = unop_with_nan,
+    [VALUE_STRING]            = unop_with_nan,
+	},
+
+};
 
 //============================
 //
-//   Operations
+//   Binary Operations
 //
 //============================
+
 
 typedef Value (*BinaryFn)(Arena *a, Value *left, Value *right);
+
 
 
 Value op_with_nan(Arena *a, Value *left, Value *right){
@@ -1944,6 +2096,8 @@ Value cat_str_str(Arena *a, Value *left, Value *right){
 }
 
 
+
+
 static const BinaryFn binop_dispatch[OP_TYPE_LIST_COUNT][VALUE_TYPE_COUNT][VALUE_TYPE_COUNT] = {
 	[OP_PLUS] = {
 		[VALUE_NUMBER] = {
@@ -2139,6 +2293,35 @@ Value resolve_variable(Arena *a, Enviromnent *e, Value *literal){
 }
 
 Value eval_expr(Arena *a, Enviromnent *e, char *script_path, AST *expr, int *silent);
+
+Value eval_unop(Arena *a, Enviromnent *e, AST *op, Value *arg_given){
+	Value *arg  = arg_given;
+
+	if(arg->valueType == VALUE_ID){
+		*arg = resolve_variable(a, e, arg);
+	}
+
+	if( op->as.binop.op >= OP_TYPE_LIST_COUNT ||
+			arg->valueType >= VALUE_TYPE_COUNT
+			)
+	{
+		return make_nan();
+	}
+
+	UnaryFn fn = unop_dispatch[op->as.binop.op][arg->valueType];
+
+	if(!fn){
+		printf("Unsupported operation!\n");
+		return make_nan();
+	}
+
+	return fn(a, arg);
+
+
+	fprintf(stderr, "Unrecognized unary operator\n");
+	exit(1);
+
+}
 
 Value eval_binop(Arena *a, Enviromnent *e, AST *op, Value *raw_left, Value *raw_right){
 
@@ -2434,6 +2617,12 @@ Value eval_expr(Arena *a, Enviromnent *e, char *script_path, AST *expr, int *sil
 				Value left  = eval_expr(a,  e, script_path, expr->as.binop.left, silent);
 				Value right = eval_expr(a,  e, script_path, expr->as.binop.right, silent);
 				value       = eval_binop(a, e, expr, &left, &right);
+				break;
+			}
+		case AST_UNARY_OP:
+			{
+				Value arg = eval_expr(a,  e, script_path, expr->as.unop.arg, silent);
+				value     = eval_unop(a, e, expr, &arg);
 				break;
 			}
 		case AST_FN_CALL:

@@ -42,11 +42,15 @@ EXPRESSION      = EXPRESSION + TERM
   					    | EXPRESSION - TERM
   					    | TERM
 
-TERM            = TERM * EXPO
-  					    | TERM / EXPO
+TERM            = TERM * UNARY
+  					    | TERM / UNARY
+  					    | UNARY
+
+UNARY           = "+" UNARY
+  					    | "-" UNARY
   					    | EXPO
 
-EXPO            = PRIMARY ^ EXPO
+EXPO            = PRIMARY ^ UNARY
   					    | PRIMARY
 
 PRIMARY         = number
