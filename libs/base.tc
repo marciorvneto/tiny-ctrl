@@ -11,3 +11,9 @@
 // Useful variables
 
 let s = poly([0, 1])
+
+// Control-specific functions
+
+fn feedback(G, H){
+  G * H / (1 + G * H)
+}

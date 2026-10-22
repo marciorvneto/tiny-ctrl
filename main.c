@@ -68,6 +68,11 @@ void arena_restore(Arena *a, size_t offset){
 //
 //============================== 
 
+struct AST;
+typedef struct {
+	struct AST* definition;
+} Function;
+
 typedef struct {
 	double* nums;
 	size_t  size;
@@ -608,6 +613,10 @@ typedef enum {
 	VALUE_TRANSFER_FUNCTION,
 	VALUE_NAN,
 
+  // User-defined functions
+
+	VALUE_FUNCTION,
+
 	// Things to think about
 	VALUE_ARRAY,
 	VALUE_MATRIX,
@@ -617,7 +626,7 @@ typedef enum {
 typedef enum {
 	STATEMENT_DECL_ASSIGN,
 	STATEMENT_ASSIGN,
-	STATEMENT_FN_DEF,
+	STATEMENT_FUNCTION_DEF,
 	STATEMENT_EXPR,
 } StatementType;
 
@@ -633,14 +642,16 @@ typedef struct {
 		char             *str;
 		char             *id;
 		Array            array;
+    Function         fun;
 	} value;
 } Value;
 
 
 struct AST {
-	ASTNodeType type;
-	AST*        parent;
-	AST*        next; // Optional, useful for linked lists
+	ASTNodeType   type;
+  StatementType statement_type;
+	AST*          parent;
+	AST*          next; // Optional, useful for linked lists
 
 	union {
 		struct {
@@ -649,7 +660,6 @@ struct AST {
 		} program;
 
 		struct {
-			StatementType type;
 			char          *dst;
 			AST           *expr;
 		} statement;
@@ -799,8 +809,8 @@ AST *ast_make_binop(Arena *a, OpType op){
 }
 
 AST *ast_make_statement(Arena *a, StatementType type){
-	AST *stmt               = ast_alloc(a, AST_STATEMENT);
-	stmt->as.statement.type = type;
+	AST *stmt            = ast_alloc(a, AST_STATEMENT);
+	stmt->statement_type = type;
 	return stmt;
 }
 
@@ -1052,7 +1062,7 @@ AST *parse_statement(Arena *a, AST *parent, Parser *parser){
 		return stmt;
   }else if(current->type == TOK_KEYWORD && (strcmp(current->value, "fn") == 0)) 
   {
-		AST *stmt = ast_make_statement(a, STATEMENT_FN_DEF);
+		AST *stmt = ast_make_statement(a, STATEMENT_FUNCTION_DEF);
     parser_eat(TOK_KEYWORD, parser);
     Token *id = parser_eat(TOK_ID, parser);
     parser_eat(TOK_LPAREN, parser);
@@ -1291,7 +1301,7 @@ void env_set_variable(Arena *a, Enviromnent *e, const char* name, Value *value){
 	*var->value         = *value;
 }
 
-void  env_list_variables(Arena* a, Enviromnent  *e){
+void  env_list_variables(Enviromnent  *e){
 	for(size_t i = 0; i < e->num_vars; i++){
 		printf("%s\n", e->vars[i].name);
 	}
@@ -1315,6 +1325,14 @@ Value make_array(Array arr){
 	Value v = {
 		.valueType   = VALUE_ARRAY,
 		.value.array = arr
+	};
+	return v;
+}
+
+Value make_function(Function fun){
+	Value v = {
+		.valueType = VALUE_FUNCTION,
+		.value.fun = fun
 	};
 	return v;
 }
@@ -2626,7 +2644,22 @@ UnaryValueDispatch callable_values_dispatch[VALUE_TYPE_COUNT][VALUE_TYPE_COUNT] 
 
 
 Value eval_func_call(Arena *a, Enviromnent *e, char *script_path, AST *fn, int *silent){
-	if(fn->as.fn_call.num_arguments == 1){
+
+  char *name  = fn->as.fn_call.fn_name;
+  size_t argc = fn->as.fn_call.num_arguments;
+
+  if (strcmp(name, "ls") == 0) {
+    if (argc != 0) {
+      printf("ls() expects zero arguments.\n");
+      return make_nan();
+    }
+
+    env_list_variables(e);
+    *silent = 1;
+    return make_num(0);
+  }
+
+  if(argc == 1){
 		Value val = eval_expr(a, e, script_path, fn->as.fn_call.first_arg, silent);
 
     // Utility
@@ -2634,6 +2667,12 @@ Value eval_func_call(Arena *a, Enviromnent *e, char *script_path, AST *fn, int *
 		if(strcmp(fn->as.fn_call.fn_name, "print") == 0) {
       print_value(a, e, &val);
       *silent = 1;
+			return make_num(0);
+		}
+
+		if(strcmp(fn->as.fn_call.fn_name, "ls") == 0) {
+      env_list_variables(e);
+      *silent = 0;
 			return make_num(0);
 		}
 
@@ -2695,7 +2734,9 @@ Value eval_func_call(Arena *a, Enviromnent *e, char *script_path, AST *fn, int *
        
     }
 
-	}else if(fn->as.fn_call.num_arguments == 2){
+  }
+
+  if(argc == 2){
 		Value first  = eval_expr(a, e, script_path, fn->as.fn_call.first_arg, silent);
 		Value second = eval_expr(a, e, script_path, fn->as.fn_call.first_arg->next, silent);
 
@@ -2728,7 +2769,7 @@ Value eval_func_call(Arena *a, Enviromnent *e, char *script_path, AST *fn, int *
 			return make_nan();
 		}
 
-	}
+  }
 
 	return make_nan();
 }
@@ -2800,7 +2841,7 @@ int eval_stmt(Arena* temp_arena, AST *ast, Enviromnent *e, char *script_path, AS
 
   int silent = 0;
 
-	if(stmt->as.statement.type == STATEMENT_EXPR){
+	if(stmt->statement_type == STATEMENT_EXPR){
     SCRATCH_SCOPE(temp_arena){
       Value result = eval_expr(temp_arena, e, script_path, stmt->as.statement.expr, &silent);
       if(!silent) print_value(temp_arena, e, &result);
@@ -2808,7 +2849,7 @@ int eval_stmt(Arena* temp_arena, AST *ast, Enviromnent *e, char *script_path, AS
 		return 0;
 	}
 
-	if(stmt->as.statement.type == STATEMENT_DECL_ASSIGN){
+	if(stmt->statement_type == STATEMENT_DECL_ASSIGN){
 		char *dst = stmt->as.statement.dst;
 		// Check if it hasn't been defined before
 		if(env_variable_idx(e->persistent, e, dst)  >= 0){
@@ -2825,7 +2866,7 @@ int eval_stmt(Arena* temp_arena, AST *ast, Enviromnent *e, char *script_path, AS
 		return 0;
 	}
 
-	if(stmt->as.statement.type == STATEMENT_ASSIGN){
+	if(stmt->statement_type == STATEMENT_ASSIGN){
 		char *dst = stmt->as.statement.dst;
 		// Check if it has been defined before
 		if(env_variable_idx(e->persistent, e, dst)  < 0){
@@ -2842,15 +2883,33 @@ int eval_stmt(Arena* temp_arena, AST *ast, Enviromnent *e, char *script_path, AS
 		return 0;
 	}
 
+	if(stmt->statement_type == STATEMENT_FUNCTION_DEF){
+		char *id = stmt->as.fn_def.id;
+
+		// Check if it has been defined before
+		if(env_variable_idx(e->persistent, e, id)  >= 0){
+			printf("There's already a variable with the name: %s\n", id);
+			return 1;
+		}
+
+    Function fun = {
+      .definition = stmt
+    };
+    Value value = make_function(fun);
+    env_set_variable(e->persistent, e, id, &value);
+
+		return 0;
+	}
+
 	return 0;
 }
 
-int run_ast(Arena* temp_arena, AST *ast, Enviromnent *e, char *script_path){
+int run_ast(Arena* a, AST *ast, Enviromnent *e, char *script_path){
 
 	AST *stmt = ast->as.program.statements_list;
 
 	while(stmt != NULL){
-		int status = eval_stmt(temp_arena, ast, e, script_path, stmt);
+		int status = eval_stmt(a, ast, e, script_path, stmt);
 		if(status != 0) return status;
 		stmt = stmt->next;
 	}
@@ -2951,13 +3010,13 @@ int launch_repl(Arena *temp_arena, Enviromnent *e, char *script_path){
     }
 
     if (strcmp(buffer, "ls") == 0) {
-      env_list_variables(e->persistent, e);
+      env_list_variables(e);
       continue;
     }
 
+    AST *ast   = arena_alloc(e->persistent, sizeof(AST));
+    parse_code = parse_source(e->persistent, e,  buffer, strlen(buffer), ast);
     SCRATCH_SCOPE(temp_arena){
-      AST *ast   = arena_alloc(temp_arena, sizeof(AST));
-      parse_code = parse_source(temp_arena, e,  buffer, strlen(buffer), ast);
       if(parse_code == 0) run_ast(temp_arena, ast, e, script_path);
     }
     if(parse_code != 0){
@@ -2970,7 +3029,7 @@ int launch_repl(Arena *temp_arena, Enviromnent *e, char *script_path){
   return parse_code;
 }
 
-char *read_entire_file(Arena *temp_arena, size_t *out_len, FILE *f){
+char *read_entire_file(size_t *out_len, FILE *f){
   if(fseek(f, 0, SEEK_END) != 0){
     perror("Error seeking to end of file");
     fclose(f);
@@ -3016,14 +3075,14 @@ char *read_entire_file(Arena *temp_arena, size_t *out_len, FILE *f){
 }
 
 int run_program(Arena *temp_arena, Enviromnent *e, FILE *f, char *script_path){
-	size_t len        = 0;
-	int parse_code    = 0;
+	size_t len         = 0;
+	int parse_code     = 0;
 
-  char *buffer = read_entire_file(temp_arena, &len, f);
-		SCRATCH_SCOPE(temp_arena){
-			AST *ast   = arena_alloc(temp_arena, sizeof(AST));
-			parse_code = parse_source(temp_arena, e,  buffer, len, ast);
-      if(parse_code == 0) run_ast(temp_arena, ast, e, script_path);
+  char *buffer = read_entire_file(&len, f);
+  AST *ast     = arena_alloc(e->persistent, sizeof(AST));
+  parse_code   = parse_source(e->persistent, e,  buffer, len, ast);
+  SCRATCH_SCOPE(temp_arena){
+    if(parse_code == 0) run_ast(temp_arena, ast, e, script_path);
   }
   free(buffer);
   if(parse_code != 0){
@@ -3039,9 +3098,9 @@ int main(int argc, char **argv){
 	ssize_t last_good = 0;
 	int parse_code    = 0;
 
-	Arena temp_arena = arena_create(1024 * 1024);      // 1 MB for now
-	Arena a          = arena_create(32 * 1024 * 1024); // 32 MB for now
-	Enviromnent e    = env_create(&a);
+	Arena temp_arena  = arena_create(1024 * 1024);      // 1 MB for now
+	Arena a           = arena_create(32 * 1024 * 1024); // 32 MB for now
+	Enviromnent e     = env_create(&a);
 
 	if(argc < 2){
 		// REPL
