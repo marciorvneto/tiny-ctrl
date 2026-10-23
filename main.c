@@ -1857,7 +1857,7 @@ TransferFunction tf_simplify(Arena *a, TransferFunction *tf){
 //
 //============================
 
-typedef Value (*NativeValueDispatch)(Arena *a, size_t argc, Value *argv);
+typedef Value (*NativeValueDispatch)(Arena *a, Environment *e, char* script, size_t argc, Value *argv, int *silent);
 typedef Value (*UnaryValueDispatch)(Arena *a, Value *caller, Value *value);
 
 //============================
@@ -2653,29 +2653,111 @@ static const BinaryFn binop_dispatch[OP_TYPE_LIST_COUNT][VALUE_TYPE_COUNT][VALUE
 //
 //====================================
 
-Value native_abs(Arena *a, size_t argc, Value *argv){ 
-  return make_num(fabs(argv[0].value.number));
-}
-Value native_log(Arena *a, size_t argc, Value *argv){ 
-  return make_num(log(argv[0].value.number));
-}
-Value native_exp(Arena *a, size_t argc, Value *argv){ 
-  return make_num(exp(argv[0].value.number));
-}
-Value native_sin(Arena *a, size_t argc, Value *argv){ 
-  return make_num(sin(argv[0].value.number));
-}
-Value native_cos(Arena *a, size_t argc, Value *argv){
-  return make_num(cos(argv[0].value.number));
-}
-Value native_sqr(Arena *a, size_t argc, Value *argv){ 
-  return make_num(argv[0].value.number * argv[0].value.number);
-}
-Value native_sqrt(Arena *a, size_t argc, Value *argv){ 
-  return make_num(sqrt(argv[0].value.number));
+//------------ System ------------
+
+Value native_ls(Arena *a, Environment *e, char* script, size_t argc, Value *argv, int *silent){ 
+  env_list_variables(e);
+  *silent = 1;
+  return make_num(0);
 }
 
+void print_value(Arena *ta, Environment *e, Value *value);
+Value native_print(Arena *a, Environment *e, char* script, size_t argc, Value *argv, int *silent){ 
+  Value val = argv[0];
+    print_value(a, e, &val);
+    *silent = 1;
+    return make_num(0);
+}
+
+int import_script(Arena *ta, Environment *e, char* importer, char *path);
+Value native_import(Arena *a, Environment *e, char* script, size_t argc, Value *argv, int *silent){ 
+  Value val = argv[0];
+  if(val.valueType != VALUE_STRING){
+    char buf[1024];
+    printf("Importing a module expects a string.\n");
+    *silent = 1;
+    return make_num(0);
+  }
+  import_script(a, e, script, val.value.str);
+  *silent = 1;
+  return make_num(0);
+}
+
+
+
+//------------ Math --------------
+
+Value native_abs(Arena *a, Environment *e, char* script, size_t argc, Value *argv, int *silent){ 
+  return make_num(fabs(argv[0].value.number));
+}
+Value native_log(Arena *a, Environment *e, char* script, size_t argc, Value *argv, int *silent){ 
+  return make_num(log(argv[0].value.number));
+}
+Value native_exp(Arena *a, Environment *e, char* script, size_t argc, Value *argv, int *silent){ 
+  return make_num(exp(argv[0].value.number));
+}
+Value native_sin(Arena *a, Environment *e, char* script, size_t argc, Value *argv, int *silent){ 
+  return make_num(sin(argv[0].value.number));
+}
+Value native_cos(Arena *a, Environment *e, char* script, size_t argc, Value *argv, int *silent){
+  return make_num(cos(argv[0].value.number));
+}
+Value native_sqr(Arena *a, Environment *e, char* script, size_t argc, Value *argv, int *silent){ 
+  return make_num(argv[0].value.number * argv[0].value.number);
+}
+Value native_sqrt(Arena *a, Environment *e, char* script, size_t argc, Value *argv, int *silent){ 
+  return make_num(sqrt(argv[0].value.number));
+}
+Value native_poly(Arena *a, Environment *e, char* script, size_t argc, Value *argv, int *silent){ 
+  Value val = argv[0];
+  if(val.valueType == VALUE_ARRAY){
+    int err;
+    Polynomial p = poly_new(a, val.value.array.nums, val.value.array.size);
+    poly_update_degree(&p);
+    return make_poly(p);
+  }
+  printf("Unsupported operation!\n");
+  return make_nan();
+}
+Value native_polymod(Arena *a, Environment *e, char* script, size_t argc, Value *argv, int *silent){ 
+  Value first = argv[0];
+  Value second = argv[1];
+  if(first.valueType == VALUE_POLYNOMIAL && second.valueType == VALUE_POLYNOMIAL){
+    Polynomial rem;
+    poly_divmod(a, first.value.poly, second.value.poly, NULL, &rem);
+    return make_poly(rem);
+  }
+  printf("Unsupported operation, expected a polynomial!\n");
+  return make_nan();
+}
+Value native_polydiv(Arena *a, Environment *e, char* script, size_t argc, Value *argv, int *silent){ 
+  Value first = argv[0];
+  Value second = argv[1];
+  if(first.valueType == VALUE_POLYNOMIAL && second.valueType == VALUE_POLYNOMIAL){
+    Polynomial div;
+    poly_divmod(a, first.value.poly, second.value.poly, &div, NULL);
+    return make_poly(div);
+  }
+  printf("Unsupported operation, expected a polynomial!\n");
+  return make_nan();
+}
+Value native_polygcd(Arena *a, Environment *e, char* script, size_t argc, Value *argv, int *silent){ 
+  Value first = argv[0];
+  Value second = argv[1];
+  if(first.valueType == VALUE_POLYNOMIAL && second.valueType == VALUE_POLYNOMIAL){
+    Polynomial gcd = poly_gcd(a, first.value.poly, second.value.poly);
+    return make_poly(gcd);
+  }
+  printf("Unsupported operation, expected a polynomial!\n");
+  return make_nan();
+}
+
+
 static const NativeValueDispatch native_fns[] = {
+  native_ls,
+  native_print,
+  native_import,
+  // Math
   native_abs,
   native_log,
   native_exp,
@@ -2683,9 +2765,18 @@ static const NativeValueDispatch native_fns[] = {
   native_cos,
   native_sqr,
   native_sqrt,
+  // Poly
+  native_poly,
+  native_polymod,
+  native_polydiv,
+  native_polygcd,
 };
 
 static const char *native_fn_names[] = {
+  "ls",
+  "print",
+  "import",
+  // Math
   "abs",
   "log",
   "exp",
@@ -2693,7 +2784,32 @@ static const char *native_fn_names[] = {
   "cos",
   "sqr",
   "sqrt",
+  // Poly
+  "poly",
+  "polymod",
+  "polydiv",
+  "polygcd",
 };
+
+static const size_t native_fn_argc[] = {
+  0,
+  1,
+  1,
+  // Math
+  1,
+  1,
+  1,
+  1,
+  1,
+  1,
+  1,
+  // Poly
+  1,
+  2,
+  2,
+  2,
+};
+
 
 
 Value resolve_variable(Arena *a, Environment *e, Value *literal){
@@ -2853,13 +2969,14 @@ Value eval_function(Arena *ta, Environment *e, AST *fn_call, char *script_path, 
       return make_nan();
     }
     NativeValueDispatch dispatch = native_fns[idx];
-    Value result = dispatch(ta, argc, evaluated);
+    Value result = dispatch(ta, e, script_path, argc, evaluated, silent);
     return result;
   }
 
 
 	// Push a new environment for the function scope
 
+  size_t scratch = arena_save(e->frame);
 	Environment *new_env = push_env(e);
 
 	// Set its argument values to those evaluated before
@@ -2877,9 +2994,17 @@ Value eval_function(Arena *ta, Environment *e, AST *fn_call, char *script_path, 
 	}
 
 	Value result;
-  AST *block = fun->value.fun.definition->as.fn_def.block;
-  int out    = eval_block(ta, fn_call, new_env, script_path, block, &result);
-	return result;
+  AST *block    = fun->value.fun.definition->as.fn_def.block;
+  int out       = eval_block(ta, fn_call, new_env, script_path, block, &result);
+
+  if(out != 0){
+    arena_restore(e->frame, scratch);
+    return make_nan();
+  }
+
+  Value escaped = value_clone(ta, &result);
+  arena_restore(e->frame, scratch);
+	return escaped;
 }
 
 void print_value(Arena *ta, Environment *e, Value *value){
@@ -3057,7 +3182,7 @@ UnaryValueDispatch callable_values_dispatch[VALUE_TYPE_COUNT][VALUE_TYPE_COUNT] 
 void initialize_native_fns(Environment *e){
   for(size_t i = 0; i < LEN(native_fns); i++){
     NativeFunctionData data = {
-      .num_arguments_native = 1,
+      .num_arguments_native = native_fn_argc[i],
       .native_index         = i
     };
     Function native_fn = {
@@ -3081,61 +3206,9 @@ Value eval_func_call(Arena *ta, Environment *e, char *script_path, AST *fn, int 
 		return eval_function(ta, e, fn, script_path, silent);
 	}
 
-  if (strcmp(name, "ls") == 0) {
-    if (argc != 0) {
-      printf("ls() expects zero arguments.\n");
-      return make_nan();
-    }
-
-    env_list_variables(e);
-    *silent = 1;
-    return make_num(0);
-  }
 
   if(argc == 1){
 		Value val = eval_expr(ta, e, script_path, fn->as.fn_call.first_arg, silent);
-
-    // Utility
-
-		if(strcmp(fn->as.fn_call.fn_name, "print") == 0) {
-      print_value(ta, e, &val);
-      *silent = 1;
-			return make_num(0);
-		}
-
-		if(strcmp(fn->as.fn_call.fn_name, "ls") == 0) {
-      env_list_variables(e);
-      *silent = 0;
-			return make_num(0);
-		}
-
-		if(strcmp(fn->as.fn_call.fn_name, "import") == 0) {
-      if(val.valueType != VALUE_STRING){
-        char buf[1024];
-        printf("Importing a module expects a string.\n");
-        *silent = 1;
-        return make_num(0);
-      }
-      import_script(ta, e, script_path, val.value.str);
-      *silent = 1;
-			return make_num(0);
-		}
-
-
-
-		// Basic math on numbers
-
-
-		if(strcmp(fn->as.fn_call.fn_name, "poly") == 0) {
-			if(val.valueType == VALUE_ARRAY){
-        int err;
-        Polynomial p = poly_new(ta, val.value.array.nums, val.value.array.size);
-        poly_update_degree(&p);
-				return make_poly(p);
-			}
-			printf("Unsupported operation!\n");
-			return make_nan();
-		}
 
     // ---------- Check if there's a suitable variable with name fn_name -----------
 
@@ -3160,41 +3233,6 @@ Value eval_func_call(Arena *ta, Environment *e, char *script_path, AST *fn, int 
       return dispatch(ta, var->value, &val);
        
     }
-
-  }
-
-  if(argc == 2){
-		Value first  = eval_expr(ta, e, script_path, fn->as.fn_call.first_arg, silent);
-		Value second = eval_expr(ta, e, script_path, fn->as.fn_call.first_arg->next, silent);
-
-		if(strcmp(fn->as.fn_call.fn_name, "polydiv") == 0) {
-			if(first.valueType == VALUE_POLYNOMIAL && second.valueType == VALUE_POLYNOMIAL){
-				Polynomial div;
-				poly_divmod(ta, first.value.poly, second.value.poly, &div, NULL);
-				return make_poly(div);
-			}
-			printf("Unsupported operation, expected a polynomial!\n");
-			return make_nan();
-		}
-
-		if(strcmp(fn->as.fn_call.fn_name, "polymod") == 0) {
-			if(first.valueType == VALUE_POLYNOMIAL && second.valueType == VALUE_POLYNOMIAL){
-				Polynomial rem;
-				poly_divmod(ta, first.value.poly, second.value.poly, NULL, &rem);
-				return make_poly(rem);
-			}
-			printf("Unsupported operation, expected a polynomial!\n");
-			return make_nan();
-		}
-
-		if(strcmp(fn->as.fn_call.fn_name, "polygcd") == 0) {
-			if(first.valueType == VALUE_POLYNOMIAL && second.valueType == VALUE_POLYNOMIAL){
-				Polynomial gcd = poly_gcd(ta, first.value.poly, second.value.poly);
-				return make_poly(gcd);
-			}
-			printf("Unsupported operation, expected a polynomial!\n");
-			return make_nan();
-		}
 
   }
 
@@ -3252,7 +3290,7 @@ Value eval_expr(Arena *ta, Environment *e, char *script_path, AST *expr, int *si
 			}
 		case AST_FN_CALL:
 			{
-				value       = eval_func_call(ta, e, script_path, expr, silent);
+				value = eval_func_call(ta, e, script_path, expr, silent);
 				break;
 			}
 		default:
@@ -3299,7 +3337,6 @@ int eval_block(
 }
 
 int eval_stmt(Arena* ta, AST *ast, Environment *e, char *script_path, AST *stmt){
-
   int silent = 0;
 
 	if(stmt->statement_type == STATEMENT_EXPR){
@@ -3313,10 +3350,10 @@ int eval_stmt(Arena* ta, AST *ast, Environment *e, char *script_path, AST *stmt)
 	if(stmt->statement_type == STATEMENT_DECL_ASSIGN){
 		char *dst = stmt->as.statement.dst;
 		// Check if it hasn't been defined before
-		if(env_variable_idx(e, dst)  >= 0){
+    if(env_find_variable(e, dst) != NULL){
 			printf("Variable %s has already been defined\n", dst);
 			return 1;
-		}
+    }
 
 		//  TODO: Check if it's not null
     SCRATCH_SCOPE(ta){
@@ -3330,15 +3367,15 @@ int eval_stmt(Arena* ta, AST *ast, Environment *e, char *script_path, AST *stmt)
 	if(stmt->statement_type == STATEMENT_ASSIGN){
 		char *dst = stmt->as.statement.dst;
 		// Check if it has been defined before
-		if(env_variable_idx(e, dst)  < 0){
-			printf("Undefined variable %s\n", dst);
+    if(env_find_variable(e, dst) != NULL){
+			printf("Variable %s has already been defined\n", dst);
 			return 1;
-		}
+    }
 
 		//  TODO: Check if it's not null
     SCRATCH_SCOPE(ta){
       Value value = eval_expr(ta, e, script_path, stmt->as.statement.expr, &silent);
-      Value saved = value_clone(e->persistent, &value);
+      Value saved = value_clone(env_storage(e), &value);
       env_set_variable(e, dst, &saved);
     }
 		return 0;
@@ -3348,7 +3385,7 @@ int eval_stmt(Arena* ta, AST *ast, Environment *e, char *script_path, AST *stmt)
 		char *id = stmt->as.fn_def.id;
 
 		// Check if it has been defined before
-		if(env_variable_idx(e, id)  >= 0){
+		if(env_find_variable(e, id) != NULL){
 			printf("There's already a variable with the name: %s\n", id);
 			return 1;
 		}
@@ -3497,11 +3534,6 @@ int launch_repl(Arena *ta, Environment *e, char *script_path){
     if (strcmp(buffer, "q") == 0) {
       printf("\nExiting...\n");
       break;
-    }
-
-    if (strcmp(buffer, "ls") == 0) {
-      env_list_variables(e);
-      continue;
     }
 
     // Tokenization and parsing use the permanent arena

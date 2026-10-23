@@ -10,10 +10,6 @@ fn log10(x) {
 	log(x)/log(10)
 }
 
-fn sqr(x) {
-	x * x
-}
-
 fn fourthpower(x) {
     sqr(sqr(x))
 }
