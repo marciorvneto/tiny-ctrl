@@ -14,6 +14,14 @@ let s = poly([0, 1])
 
 // Control-specific functions
 
-fn feedback(G, H){
-  G * H / (1 + G * H)
+fn feedback(G, H) {
+  G / (1 + G * H)
+}
+
+fn pid(kp, kd, ki) {
+	kp + kd*s + ki/s
+}
+
+fn closedloop(G) {
+  G / (1 + G)
 }

@@ -3170,27 +3170,23 @@ int launch_repl(Arena *temp_arena, Environment *e, char *script_path){
 char *read_entire_file(size_t *out_len, FILE *f){
   if(fseek(f, 0, SEEK_END) != 0){
     perror("Error seeking to end of file");
-    fclose(f);
     return NULL;
   }
 
   long file_size = ftell(f);
   if(file_size < 0){
     perror("Error telling file size");
-    fclose(f);
     return NULL;
   }
 
   if (fseek(f, 0, SEEK_SET) != 0) {
     perror("Error seeking to start of file");
-    fclose(f);
     return NULL;
   }
 
   char *buffer = malloc(file_size + 1);
   if(!buffer){
     perror("Memory allocation failed");
-    fclose(f);
     return NULL;
   }
 
@@ -3198,7 +3194,6 @@ char *read_entire_file(size_t *out_len, FILE *f){
   if (bytes_read < (size_t)file_size && ferror(f)) {
     perror("Error reading file");
     free(buffer);
-    fclose(f);
     return NULL;
   }
   buffer[bytes_read] = '\0';
@@ -3207,7 +3202,6 @@ char *read_entire_file(size_t *out_len, FILE *f){
     *out_len = bytes_read;
   }
 
-  fclose(f);
   return buffer;
 
 }
