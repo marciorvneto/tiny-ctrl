@@ -47,9 +47,17 @@ PARAMS          = id
 
 BLOCK           = "{" EXPRESSION "}" // This is temporary
 
+EXPRESSION      = ADDITIVE COMPOP ADDITIVE
+                | ADDITIVE
 
-EXPRESSION      = EXPRESSION + TERM
-  					    | EXPRESSION - TERM
+COMPOP          = ==
+  					    | <=
+  					    | >=
+  					    | > 
+  					    | < 
+
+ADDITIVE        = ADDITIVE + TERM
+  					    | ADDITIVE - TERM
   					    | TERM
 
 TERM            = TERM * UNARY

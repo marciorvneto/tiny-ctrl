@@ -198,6 +198,11 @@ char *alloc_string(Arena *a, size_t len){
 	X(TOK_RCURLY) \
 	X(TOK_COMMA) \
 	X(TOK_EQ) \
+	X(TOK_DBL_EQ) \
+	X(TOK_LT) \
+	X(TOK_GT) \
+	X(TOK_LEQ) \
+	X(TOK_GEQ) \
 	V(TOK_PLUS) \
 	V(TOK_MINUS) \
 	V(TOK_MUL) \
@@ -291,8 +296,12 @@ size_t tokenizer_is_number(const char *pos){
 }
 
 
+int tokenizer_lookahead(const char *pos, const char *symbol){
+	if(strncmp(pos + 1, symbol, 1) == 0) return 1;
+	return 0;
+}
 int tokenizer_is_symbol(const char *pos, const char *symbol){
-	if(strncmp(pos, symbol, 1) == 0) return 1;
+	if(strncmp(pos, symbol, 1) == 0) return strlen(symbol);
 	return 0;
 }
 
@@ -301,12 +310,12 @@ int tokenizer_is_str(const char *pos, const char *str, size_t n){
 	return 0;
 }
 
-Token tokenizer_make_symbol(Arena *a, TokenType type, Tokenizer *tokenizer){
+Token tokenizer_make_symbol(Arena *a, TokenType type, Tokenizer *tokenizer, size_t symbol_len){
 	Token tok = {
 		tok.type  = type,
 		tok.value = NULL,
 	};
-	size_t num_chars = 1;
+	size_t num_chars = symbol_len;
 	tokenizer->offset += num_chars;
 	return tok;
 }
@@ -460,75 +469,101 @@ int tokenize(Arena *a, const char *line, size_t n, Token *tokens , size_t *num_t
 			continue;
 		}
 		// Check for binary operators
-			if(tokenizer_is_symbol(pos, "+")) {
-				Token tok = tokenizer_make_symbol(a, TOK_PLUS, &tokenizer);
+			size_t symbol_len = 0;
+			if((symbol_len = tokenizer_is_symbol(pos, "+"))) {
+				Token tok = tokenizer_make_symbol(a, TOK_PLUS, &tokenizer, symbol_len);
 				tokens[(*num_tokens)++] = tok;
 				continue;
 			};
-			if(tokenizer_is_symbol(pos, "-")) {
-				Token tok = tokenizer_make_symbol(a, TOK_MINUS, &tokenizer);
+			if((symbol_len = tokenizer_is_symbol(pos, "-"))) {
+				Token tok = tokenizer_make_symbol(a, TOK_MINUS, &tokenizer, symbol_len);
 				tokens[(*num_tokens)++] = tok;
 				continue;
 			};
-			if(tokenizer_is_symbol(pos, "*")) {
-				Token tok = tokenizer_make_symbol(a, TOK_MUL, &tokenizer);
+			if((symbol_len = tokenizer_is_symbol(pos, "*"))) {
+				Token tok = tokenizer_make_symbol(a, TOK_MUL, &tokenizer, symbol_len);
 				tokens[(*num_tokens)++] = tok;
 				continue;
 			};
-			if(tokenizer_is_symbol(pos, "/")) {
-				Token tok = tokenizer_make_symbol(a, TOK_DIV, &tokenizer);
+			if((symbol_len = tokenizer_is_symbol(pos, "/"))) {
+				Token tok = tokenizer_make_symbol(a, TOK_DIV, &tokenizer, symbol_len);
 				tokens[(*num_tokens)++] = tok;
 				continue;
 			};
-			if(tokenizer_is_symbol(pos, "^")) {
-				Token tok = tokenizer_make_symbol(a, TOK_CARET, &tokenizer);
+			if((symbol_len = tokenizer_is_symbol(pos, "^"))) {
+				Token tok = tokenizer_make_symbol(a, TOK_CARET, &tokenizer, symbol_len);
 				tokens[(*num_tokens)++] = tok;
 				continue;
 			};
-			if(tokenizer_is_symbol(pos, "@")) {
-				Token tok = tokenizer_make_symbol(a, TOK_AT, &tokenizer);
+			if((symbol_len = tokenizer_is_symbol(pos, "@"))) {
+				Token tok = tokenizer_make_symbol(a, TOK_AT, &tokenizer, symbol_len);
 				tokens[(*num_tokens)++] = tok;
 				continue;
 			};
 
 		// Check for special symbols
-		if(tokenizer_is_symbol(pos, "=")) {
-			Token tok = tokenizer_make_symbol(a, TOK_EQ, &tokenizer);
+		if(tokenizer_is_symbol(pos, "=") && tokenizer_lookahead(pos, "=")) {
+			Token tok = tokenizer_make_symbol(a, TOK_DBL_EQ, &tokenizer, 2);
 			tokens[(*num_tokens)++] = tok;
 			continue;
 		};
-		if(tokenizer_is_symbol(pos, "(")) {
-			Token tok = tokenizer_make_symbol(a, TOK_LPAREN, &tokenizer);
+		if(tokenizer_is_symbol(pos, "<") && tokenizer_lookahead(pos, "=")) {
+			Token tok = tokenizer_make_symbol(a, TOK_LEQ, &tokenizer, 2);
 			tokens[(*num_tokens)++] = tok;
 			continue;
 		};
-		if(tokenizer_is_symbol(pos, ")")) {
-			Token tok = tokenizer_make_symbol(a, TOK_RPAREN, &tokenizer);
+		if(tokenizer_is_symbol(pos, ">") && tokenizer_lookahead(pos, "=")) {
+			Token tok = tokenizer_make_symbol(a, TOK_GEQ, &tokenizer, 2);
 			tokens[(*num_tokens)++] = tok;
 			continue;
 		};
-		if(tokenizer_is_symbol(pos, "[")) {
-			Token tok = tokenizer_make_symbol(a, TOK_LBRACKET, &tokenizer);
+		if((symbol_len = tokenizer_is_symbol(pos, "<"))) {
+			Token tok = tokenizer_make_symbol(a, TOK_LT, &tokenizer, symbol_len);
 			tokens[(*num_tokens)++] = tok;
 			continue;
 		};
-		if(tokenizer_is_symbol(pos, "]")) {
-			Token tok = tokenizer_make_symbol(a, TOK_RBRACKET, &tokenizer);
+		if((symbol_len = tokenizer_is_symbol(pos, ">"))) {
+			Token tok = tokenizer_make_symbol(a, TOK_GT, &tokenizer, symbol_len);
 			tokens[(*num_tokens)++] = tok;
 			continue;
 		};
-		if(tokenizer_is_symbol(pos, "{")) {
-			Token tok = tokenizer_make_symbol(a, TOK_LCURLY, &tokenizer);
+		if((symbol_len = tokenizer_is_symbol(pos, "="))) {
+			Token tok = tokenizer_make_symbol(a, TOK_EQ, &tokenizer, symbol_len);
 			tokens[(*num_tokens)++] = tok;
 			continue;
 		};
-		if(tokenizer_is_symbol(pos, "}")) {
-			Token tok = tokenizer_make_symbol(a, TOK_RCURLY, &tokenizer);
+		if((symbol_len = tokenizer_is_symbol(pos, "("))) {
+			Token tok = tokenizer_make_symbol(a, TOK_LPAREN, &tokenizer, symbol_len);
 			tokens[(*num_tokens)++] = tok;
 			continue;
 		};
-		if(tokenizer_is_symbol(pos, ",")) {
-			Token tok = tokenizer_make_symbol(a, TOK_COMMA, &tokenizer);
+		if((symbol_len = tokenizer_is_symbol(pos, ")"))) {
+			Token tok = tokenizer_make_symbol(a, TOK_RPAREN, &tokenizer, symbol_len);
+			tokens[(*num_tokens)++] = tok;
+			continue;
+		};
+		if((symbol_len = tokenizer_is_symbol(pos, "["))) {
+			Token tok = tokenizer_make_symbol(a, TOK_LBRACKET, &tokenizer, symbol_len);
+			tokens[(*num_tokens)++] = tok;
+			continue;
+		};
+		if((symbol_len = tokenizer_is_symbol(pos, "]"))) {
+			Token tok = tokenizer_make_symbol(a, TOK_RBRACKET, &tokenizer, symbol_len);
+			tokens[(*num_tokens)++] = tok;
+			continue;
+		};
+		if((symbol_len = tokenizer_is_symbol(pos, "{"))) {
+			Token tok = tokenizer_make_symbol(a, TOK_LCURLY, &tokenizer, symbol_len);
+			tokens[(*num_tokens)++] = tok;
+			continue;
+		};
+		if((symbol_len = tokenizer_is_symbol(pos, "}"))) {
+			Token tok = tokenizer_make_symbol(a, TOK_RCURLY, &tokenizer, symbol_len);
+			tokens[(*num_tokens)++] = tok;
+			continue;
+		};
+		if((symbol_len = tokenizer_is_symbol(pos, ","))) {
+			Token tok = tokenizer_make_symbol(a, TOK_COMMA, &tokenizer, symbol_len);
 			tokens[(*num_tokens)++] = tok;
 			continue;
 		};
@@ -570,13 +605,18 @@ typedef enum {
 } ASTNodeType;
 
 
-#define OP_TYPE_LIST           \
+#define OP_TYPE_LIST         \
 	      X(OP_PLUS)           \
-	      X(OP_MINUS)           \
-	      X(OP_MUL)           \
-	      X(OP_DIV)           \
-	      X(OP_POW)           \
+	      X(OP_MINUS)          \
+	      X(OP_MUL)            \
+	      X(OP_DIV)            \
+	      X(OP_POW)            \
 	      X(OP_MMUL)           \
+				X(OP_DBL_EQ)         \
+				X(OP_GEQ)            \
+				X(OP_LEQ)            \
+				X(OP_LT)             \
+				X(OP_GT)             \
 	      X(OP_TYPE_LIST_COUNT)
 
 typedef enum {
@@ -605,6 +645,11 @@ OpType op_from_tok(TokenType type){
 	  case TOK_DIV:     return OP_DIV;
 	  case TOK_CARET:   return OP_POW;
 	  case TOK_AT:      return OP_MMUL;
+	  case TOK_DBL_EQ:  return OP_DBL_EQ;
+	  case TOK_GEQ:     return OP_GEQ;
+	  case TOK_LEQ:     return OP_LEQ;
+	  case TOK_LT:      return OP_LT;
+	  case TOK_GT:      return OP_GT;
 		default:          UNREACHABLE("op_from_tok");
 	}
 }
@@ -999,7 +1044,7 @@ AST *parse_expo(Arena *a, AST *parent, Parser *parser){
 	return primary;
 }
 
-AST *parse_expression(Arena *a, AST *parent, Parser *parser){
+AST *parse_additive(Arena *a, AST *parent, Parser *parser){
 	AST *left = parse_term(a, parent, parser);
 	while(!parser_done(parser) && (
 			parser_peek(parser)->type == TOK_PLUS ||
@@ -1009,6 +1054,26 @@ AST *parse_expression(Arena *a, AST *parent, Parser *parser){
 		Token *op_tok         = parser_eat(parser_peek(parser)->type, parser);
 		AST   *binop          = ast_make_binop(a, op_from_tok(op_tok->type));
 		AST   *right          = parse_term(a, parent, parser);
+		binop->as.binop.left  = left;
+		binop->as.binop.right = right;
+		left = binop;
+	}
+	return left;
+}
+
+AST *parse_expression(Arena *a, AST *parent, Parser *parser){
+	AST *left = parse_additive(a, parent, parser);
+	while(!parser_done(parser) && (
+			parser_peek(parser)->type == TOK_DBL_EQ ||
+			parser_peek(parser)->type == TOK_LT     ||
+			parser_peek(parser)->type == TOK_GT     ||
+			parser_peek(parser)->type == TOK_LEQ    ||
+			parser_peek(parser)->type == TOK_GEQ)
+		)
+	{
+		Token *op_tok         = parser_eat(parser_peek(parser)->type, parser);
+		AST   *binop          = ast_make_binop(a, op_from_tok(op_tok->type));
+		AST   *right          = parse_additive(a, parent, parser);
 		binop->as.binop.left  = left;
 		binop->as.binop.right = right;
 		left = binop;
@@ -1806,6 +1871,21 @@ Value div_num_num(Arena *a, Value *left, Value *right){
 Value pow_num_num(Arena *a, Value *left, Value *right){
 		return make_num(pow(left->value.number, right->value.number));
 }
+Value eq_num_num(Arena *a, Value *left, Value *right){
+		return make_num(left->value.number == right->value.number);
+}
+Value lt_num_num(Arena *a, Value *left, Value *right){
+		return make_num(left->value.number < right->value.number);
+}
+Value gt_num_num(Arena *a, Value *left, Value *right){
+		return make_num(left->value.number > right->value.number);
+}
+Value leq_num_num(Arena *a, Value *left, Value *right){
+		return make_num(left->value.number <= right->value.number);
+}
+Value geq_num_num(Arena *a, Value *left, Value *right){
+		return make_num(left->value.number >= right->value.number);
+}
 
 // ------------- Arrays --------------------
 
@@ -2445,6 +2525,39 @@ static const BinaryFn binop_dispatch[OP_TYPE_LIST_COUNT][VALUE_TYPE_COUNT][VALUE
 			[VALUE_NAN]               = op_with_nan,
 		} 
 	},
+
+	// Comparisons
+
+	[OP_DBL_EQ] = {
+		[VALUE_NUMBER] = {
+			[VALUE_NUMBER] = eq_num_num,
+		}
+	},
+
+	[OP_LT] = {
+		[VALUE_NUMBER] = {
+			[VALUE_NUMBER] = lt_num_num,
+		}
+	},
+
+	[OP_GT] = {
+		[VALUE_NUMBER] = {
+			[VALUE_NUMBER] = gt_num_num,
+		}
+	},
+
+	[OP_GEQ] = {
+		[VALUE_NUMBER] = {
+			[VALUE_NUMBER] = geq_num_num,
+		}
+	},
+
+	[OP_LEQ] = {
+		[VALUE_NUMBER] = {
+			[VALUE_NUMBER] = leq_num_num,
+		}
+	},
+
 };
 
 
@@ -2518,7 +2631,7 @@ Value eval_binop(Arena *a, Environment *e, AST *op, Value *raw_left, Value *raw_
 	BinaryFn fn = binop_dispatch[op->as.binop.op][left->valueType][right->valueType];
 
 	if(!fn){
-		printf("Unsupported operation!\n");
+		printf("Unsupported binary operation!\n");
 		return make_nan();
 	}
 
