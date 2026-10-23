@@ -73,6 +73,12 @@ typedef struct {
 	struct AST* definition;
 } Function;
 
+int function_repr(Arena *a, size_t num_args, const char *id, char* buf){
+	int printed = sprintf(buf, "%s: fn(%zu)", id, num_args);
+	buf[printed] = '\0';
+  return printed;
+}
+
 typedef struct {
 	double* nums;
 	size_t  size;
@@ -757,6 +763,7 @@ Token *parser_lookahead(Parser *parser){
 
 AST *ast_make_string(Arena *a, size_t len){
 	AST *expr = ast_alloc(a, AST_LITERAL);
+	expr->statement_type       = STATEMENT_EXPR;
 	expr->as.literal.value.str = arena_alloc(a, len + 1);
 	expr->as.literal.valueType = VALUE_STRING;
 	return expr;
@@ -764,13 +771,15 @@ AST *ast_make_string(Arena *a, size_t len){
 
 AST *ast_make_number(Arena *a, double number){
 	AST *expr = ast_alloc(a, AST_LITERAL);
+	expr->statement_type          = STATEMENT_EXPR;
 	expr->as.literal.value.number = number;
-	expr->as.literal.valueType = VALUE_NUMBER;
+	expr->as.literal.valueType    = VALUE_NUMBER;
 	return expr;
 }
 
 AST *ast_make_id(Arena *a, char *id){
 	AST *expr = ast_alloc(a, AST_ID);
+	expr->statement_type       = STATEMENT_EXPR;
 	expr->as.literal.value.str = id;
 	expr->as.literal.valueType = VALUE_ID;
 	return expr;
@@ -778,6 +787,7 @@ AST *ast_make_id(Arena *a, char *id){
 
 AST *ast_make_array(Arena *a){
 	AST *array = ast_alloc(a, AST_ARRAY);
+	array->statement_type = STATEMENT_EXPR;
 	array->as.array.first = NULL;
 	array->as.array.size  = 0;
 	return array;
@@ -785,6 +795,7 @@ AST *ast_make_array(Arena *a){
 
 AST *ast_make_fn_call(Arena *a, const char *fn_name){
 	AST *fn_call = ast_alloc(a, AST_FN_CALL);
+	fn_call->statement_type           = STATEMENT_EXPR;
 	fn_call->as.fn_call.num_arguments = 0;
 	fn_call->as.fn_call.fn_name       = arena_alloc(a, strlen(fn_name) + 1);
 	fn_call->as.fn_call.first_arg     = NULL;
@@ -794,17 +805,19 @@ AST *ast_make_fn_call(Arena *a, const char *fn_name){
 
 AST *ast_make_unop(Arena *a, OpType op){
 	AST *unop = ast_alloc(a, AST_UNARY_OP); 
-	unop->as.unop.op  = op;
-	unop->as.unop.arg = NULL;
+	unop->statement_type = STATEMENT_EXPR;
+	unop->as.unop.op     = op;
+	unop->as.unop.arg    = NULL;
 	return unop;
 }
 
 
 AST *ast_make_binop(Arena *a, OpType op){
 	AST *binop = ast_alloc(a, AST_BINARY_OP); 
-	binop->as.binop.left = NULL;
+	binop->statement_type = STATEMENT_EXPR;
+	binop->as.binop.left  = NULL;
 	binop->as.binop.right = NULL;
-	binop->as.binop.op = op;
+	binop->as.binop.op    = op;
 	return binop;
 }
 
@@ -1005,28 +1018,31 @@ AST *parse_expression(Arena *a, AST *parent, Parser *parser){
 
 
 void parse_params(Arena *a, AST *fn_def, Parser *parser){
-  fn_def->as.fn_def.num_args = 0;
-  if(parser_peek(parser)->type != TOK_ID) return;
+	fn_def->as.fn_def.num_args = 0;
+	if(parser_peek(parser)->type != TOK_ID) return;
 
-  AST *tail = fn_def->as.fn_def.params;
+	AST *tail = NULL;
 
-  while(parser_peek(parser)->type == TOK_ID){
-    Token *id_tok = parser_eat(TOK_ID, parser);
-    if(id_tok == NULL) return;
+	while(parser_peek(parser)->type == TOK_ID){
+		Token *id_tok = parser_eat(TOK_ID, parser);
+		if(id_tok == NULL) return;
 
-    if(tail == NULL){
-      tail = ast_make_id(a, id_tok->value);
-    }else {
-      *tail = *ast_make_id(a, id_tok->value);
-    }
+		AST *node  = ast_make_id(a, id_tok->value);
+		node->next = NULL;
 
-    tail  = tail->next;
-    fn_def->as.fn_def.num_args++;
+		if(tail == NULL){
+			fn_def->as.fn_def.params = node;
+		}else {
+			tail->next = node;
+		}
 
-    if(parser_peek(parser)->type != TOK_COMMA){
-      return;
-    } else parser_eat(TOK_COMMA, parser);
-  }
+		tail = node;
+		fn_def->as.fn_def.num_args++;
+
+		if(parser_peek(parser)->type != TOK_COMMA){
+			return;
+		} else parser_eat(TOK_COMMA, parser);
+	}
 
 }
 
@@ -1076,7 +1092,7 @@ AST *parse_statement(Arena *a, AST *parent, Parser *parser){
 
     parser_eat(TOK_RPAREN, parser);
 
-    stmt->as.fn_def.block   = parse_block(a, stmt, parser);
+    stmt->as.fn_def.block = parse_block(a, stmt, parser);
 
     return stmt;
 
@@ -1247,35 +1263,59 @@ typedef struct {
 	Value *value;
 } Variable;
 
-typedef struct {
-  Arena    *persistent;
-	Variable *vars;
-	size_t   num_vars;
-} Enviromnent;
+typedef struct Environment Environment;
+struct Environment {
+  Arena       *persistent;
+	Variable    *vars;
+	size_t      num_vars;
+	Environment *parent;
+};
 
-Enviromnent env_create(Arena *a){
-	Enviromnent e;
-  e.persistent = a;
-	e.vars       = arena_alloc(a, 32 * sizeof(Variable));
-	e.num_vars   = 0;
+void env_init(Environment *e, Arena *a){
+  e->persistent = a;
+	e->vars       = arena_alloc(a, 32 * sizeof(Variable));
+	e->num_vars   = 0;
+	e->parent     = NULL;
+}
+
+Environment env_create(Arena *a){
+	Environment e;
+	env_init(&e, a);
 	return e;
 }
 
-int env_variable_idx(Arena *a, Enviromnent *e, const char* name){
+int env_variable_idx(Arena *a, Environment *e, const char* name){
 	for(int i = 0; i < e->num_vars; i++){
 		if(strcmp(name, e->vars[i].name) == 0) return i;
 	}
 	return -1;
 }
 
-Variable *env_get_variable_from_idx(Arena *a, Enviromnent *e, int idx){
+Variable *env_get_variable_from_idx(Arena *a, Environment *e, int idx){
 	if(idx < 0) return NULL;
 	if(idx >= e->num_vars) return NULL;
 	return &e->vars[idx];
 }
 
+Variable *env_find_variable(Arena *a, Environment *e, const char* name){
+	if(e == NULL) return NULL;
 
-void env_alloc_variable(Arena *a, Enviromnent *e, const char* name, Value *value){
+	for(
+			Environment *env  = e;
+			env              != NULL;
+			env               = env->parent
+	){
+		int i = env_variable_idx(a, env, name);
+		if(i >= 0) return env_get_variable_from_idx(a, env, i);
+	}
+
+	return NULL;
+
+}
+
+
+
+void env_alloc_variable(Arena *a, Environment *e, const char* name, Value *value){
 	Variable *var       = &e->vars[e->num_vars];
 
 	size_t name_len     = strlen(name);
@@ -1290,7 +1330,7 @@ void env_alloc_variable(Arena *a, Enviromnent *e, const char* name, Value *value
 	// TODO: Implement reallocation
 }
 
-void env_set_variable(Arena *a, Enviromnent *e, const char* name, Value *value){
+void env_set_variable(Arena *a, Environment *e, const char* name, Value *value){
 	int idx =  env_variable_idx(a, e, name);
 	if(idx < 0){
 		env_alloc_variable(a, e, name, value);
@@ -1301,7 +1341,7 @@ void env_set_variable(Arena *a, Enviromnent *e, const char* name, Value *value){
 	*var->value         = *value;
 }
 
-void  env_list_variables(Enviromnent  *e){
+void  env_list_variables(Environment  *e){
 	for(size_t i = 0; i < e->num_vars; i++){
 		printf("%s\n", e->vars[i].name);
 	}
@@ -2409,7 +2449,7 @@ static const BinaryFn binop_dispatch[OP_TYPE_LIST_COUNT][VALUE_TYPE_COUNT][VALUE
 
 
 
-Value resolve_variable(Arena *a, Enviromnent *e, Value *literal){
+Value resolve_variable(Arena *a, Environment *e, Value *literal){
     if(literal->valueType == VALUE_STRING){
       return *literal;
     }
@@ -2423,9 +2463,9 @@ Value resolve_variable(Arena *a, Enviromnent *e, Value *literal){
 		return *var->value;
 }
 
-Value eval_expr(Arena *a, Enviromnent *e, char *script_path, AST *expr, int *silent);
+Value eval_expr(Arena *a, Environment *e, char *script_path, AST *expr, int *silent);
 
-Value eval_unop(Arena *a, Enviromnent *e, AST *op, Value *arg_given){
+Value eval_unop(Arena *a, Environment *e, AST *op, Value *arg_given){
 	Value *arg  = arg_given;
 
 	if(arg->valueType == VALUE_ID){
@@ -2454,7 +2494,7 @@ Value eval_unop(Arena *a, Enviromnent *e, AST *op, Value *arg_given){
 
 }
 
-Value eval_binop(Arena *a, Enviromnent *e, AST *op, Value *raw_left, Value *raw_right){
+Value eval_binop(Arena *a, Environment *e, AST *op, Value *raw_left, Value *raw_right){
 
 	Value *left  = raw_left;
 	Value *right = raw_right;
@@ -2492,7 +2532,85 @@ Value eval_binop(Arena *a, Enviromnent *e, AST *op, Value *raw_left, Value *raw_
 
 }
 
-void print_value(Arena *a, Enviromnent *e, Value *value){
+Environment *push_env(Arena *a, Environment *e){
+	Environment *new_env = arena_alloc(a, sizeof(Environment));
+	env_init(new_env, a);
+	new_env->parent      = e;
+	return new_env;
+}
+
+Value eval_function(Arena *a, Environment *e, AST *fn_call, char *script_path, int *silent){
+	int argc      = fn_call->as.fn_call.num_arguments;
+	char *fn_name = fn_call->as.fn_call.fn_name;
+
+	// Evaluating arguments in the base environment
+
+	Value *evaluated = arena_alloc(a, argc * sizeof(Value));
+	if(argc > 0){
+		size_t i = 0;
+		for(
+			AST *arg  = fn_call->as.fn_call.first_arg;
+			arg      != NULL;
+			arg       = arg->next
+		){
+			Value val    = eval_expr(a, e, script_path, arg, silent);
+			evaluated[i] = val;
+			i++;
+		}
+	}
+
+	// Get the function variable from the base environment
+
+	Variable *fun_var = env_find_variable(a, e, fn_name);
+	if(!fun_var) {
+		printf("Undefined function %s\n", fn_call->as.fn_call.fn_name);
+		return make_nan();
+	}
+	Value *fun = fun_var->value;
+
+	// Sanity checks
+
+	if (fun->valueType != VALUE_FUNCTION) {
+		fprintf(stderr, "%s is not a function\n", fn_name);
+		return make_nan();
+	}
+
+	size_t expected = fun->value.fun.definition->as.fn_def.num_args;
+
+	if ((size_t)argc != expected) {
+		fprintf(stderr,
+				"%s expects %zu arguments, got %d\n",
+				fn_name, expected, argc);
+		return make_nan();
+	}
+
+
+	// Push a new environment for the function scope
+
+	Environment *new_env = push_env(a, e);
+
+	// Set its argument values to those evaluated before
+
+	size_t i = 0;
+	for(
+			AST *arg     = fn_call->as.fn_call.first_arg,
+			    *arg_def = fun->value.fun.definition->as.fn_def.params;
+			arg      != NULL;
+			arg       = arg->next,
+			arg_def   = arg_def->next
+		 ){
+		env_set_variable(a, new_env, arg_def->as.literal.value.id, &evaluated[i]);
+		i++;
+	}
+
+	// Temporary: at the moment, functions only contain one expression
+	AST *expr    = fun->value.fun.definition->as.fn_def.block;
+	Value result = eval_expr(a, new_env, script_path, expr, silent);
+
+	return result;
+}
+
+void print_value(Arena *a, Environment *e, Value *value){
   printf("\n");
 	switch(value->valueType){
 		case VALUE_ID:
@@ -2534,6 +2652,18 @@ void print_value(Arena *a, Enviromnent *e, Value *value){
         printf("%s\n", buf);
 				break;
 			}
+		case VALUE_FUNCTION:
+			{
+        char buf[1024];
+        function_repr(
+						a, 
+						value->value.fun.definition->as.fn_def.num_args,
+						value->value.fun.definition->as.fn_def.id,
+						buf
+				);
+        printf("%s\n", buf);
+				break;
+			}
 		case VALUE_TRANSFER_FUNCTION:
 			{
         char buf[1024];
@@ -2549,7 +2679,7 @@ void print_value(Arena *a, Enviromnent *e, Value *value){
   printf("\n");
 }
 
-int run_program(Arena *temp_arena, Enviromnent *e, FILE *f, char *script_path);
+int run_program(Arena *temp_arena, Environment *e, FILE *f, char *script_path);
 
 char *resolve_path(Arena *a, char* importer, char *path){
   char *candidate = NULL;
@@ -2608,7 +2738,7 @@ char *resolve_path(Arena *a, char* importer, char *path){
   return candidate;
 }
 
-int import_script(Arena *a, Enviromnent *e, char* importer, char *path){ 
+int import_script(Arena *a, Environment *e, char* importer, char *path){ 
   char *resolved_path = resolve_path(a, importer, path);
   FILE *f             = fopen(resolved_path, "r");
   if(f == NULL){
@@ -2643,10 +2773,17 @@ UnaryValueDispatch callable_values_dispatch[VALUE_TYPE_COUNT][VALUE_TYPE_COUNT] 
 };
 
 
-Value eval_func_call(Arena *a, Enviromnent *e, char *script_path, AST *fn, int *silent){
+Value eval_func_call(Arena *a, Environment *e, char *script_path, AST *fn, int *silent){
 
   char *name  = fn->as.fn_call.fn_name;
   size_t argc = fn->as.fn_call.num_arguments;
+
+	// Check if it is a user-defined function
+
+	Variable *var = env_find_variable(a, e, name);
+	if(var && var->value->valueType == VALUE_FUNCTION){
+		return eval_function(a, e, fn, script_path, silent);
+	}
 
   if (strcmp(name, "ls") == 0) {
     if (argc != 0) {
@@ -2772,10 +2909,11 @@ Value eval_func_call(Arena *a, Enviromnent *e, char *script_path, AST *fn, int *
   }
 
 	return make_nan();
+
 }
 
 
-Value eval_expr(Arena *a, Enviromnent *e, char *script_path, AST *expr, int *silent){
+Value eval_expr(Arena *a, Environment *e, char *script_path, AST *expr, int *silent){
 	Value value = {0};
 
 	switch(expr->type){
@@ -2837,7 +2975,7 @@ Value eval_expr(Arena *a, Enviromnent *e, char *script_path, AST *expr, int *sil
 	return value;
 }
 
-int eval_stmt(Arena* temp_arena, AST *ast, Enviromnent *e, char *script_path, AST *stmt){
+int eval_stmt(Arena* temp_arena, AST *ast, Environment *e, char *script_path, AST *stmt){
 
   int silent = 0;
 
@@ -2904,7 +3042,7 @@ int eval_stmt(Arena* temp_arena, AST *ast, Enviromnent *e, char *script_path, AS
 	return 0;
 }
 
-int run_ast(Arena* a, AST *ast, Enviromnent *e, char *script_path){
+int run_ast(Arena* a, AST *ast, Environment *e, char *script_path){
 
 	AST *stmt = ast->as.program.statements_list;
 
@@ -2918,7 +3056,7 @@ int run_ast(Arena* a, AST *ast, Enviromnent *e, char *script_path){
 }
 
 
-int parse_source(Arena *a, Enviromnent *e,  const char *source, size_t source_len, AST *ast){
+int parse_source(Arena *a, Environment *e,  const char *source, size_t source_len, AST *ast){
 	// Null-terminated
 
   // --------- Commands that require parsing -----------
@@ -2976,7 +3114,7 @@ void cleanup(Arena *temp_arena, Arena *a){
 	arena_destroy(a);
 }
 
-int launch_repl(Arena *temp_arena, Enviromnent *e, char *script_path){
+int launch_repl(Arena *temp_arena, Environment *e, char *script_path){
   char *buffer      = NULL; // Null-terminated
   size_t size       = 0;
   ssize_t nread     = 0;
@@ -3074,7 +3212,7 @@ char *read_entire_file(size_t *out_len, FILE *f){
 
 }
 
-int run_program(Arena *temp_arena, Enviromnent *e, FILE *f, char *script_path){
+int run_program(Arena *temp_arena, Environment *e, FILE *f, char *script_path){
 	size_t len         = 0;
 	int parse_code     = 0;
 
@@ -3100,7 +3238,7 @@ int main(int argc, char **argv){
 
 	Arena temp_arena  = arena_create(1024 * 1024);      // 1 MB for now
 	Arena a           = arena_create(32 * 1024 * 1024); // 32 MB for now
-	Enviromnent e     = env_create(&a);
+	Environment e     = env_create(&a);
 
 	if(argc < 2){
 		// REPL

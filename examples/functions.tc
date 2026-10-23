@@ -2,4 +2,33 @@ fn addition(x, y) {
   x + y
 }
 
-ls()
+fn subtraction(x, y) {
+  x - y
+}
+
+fn log10(x) {
+	log(x)/log(10)
+}
+
+fn sqr(x) {
+	x * x
+}
+
+fn fourthpower(x) {
+    sqr(sqr(x))
+}
+
+fn factorial(x) {
+  1	
+}
+
+
+let x = 100
+
+print(addition(2,3))
+
+print(x)
+
+print(fourthpower(2))
+
+print(factorial(0))
