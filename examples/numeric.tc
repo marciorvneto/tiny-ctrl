@@ -81,3 +81,6 @@ fn nr(f, x0, h) {
 print("d(x^2)/dx|x= 5   = " + derivative(square, 5, 0.00001))
 print("d(ln(x))/dx|x= 5 = " + derivative(log, 5, 0.00001))
 print("sqrt(5) through Newton-Raphson = " + nr(to_solve, 5, 0.00001))
+print(log)
+print(sqrt)
+print(square)
