@@ -1,0 +1,83 @@
+fn derivative(f, x0, h) {
+  (f(x0 + h) - f(x0 - h))/(2*h)
+}
+
+fn square(x) { x*x }
+
+fn to_solve(x) { square(x) - 5 }
+
+fn nr(f, x0, h) {
+  // Using centered derivatives for now
+
+  let tol  = 0.000001
+  let err  = f(x0)
+  let xold = x0
+  let xnew = x0
+
+  let f_prime = derivative(f, xold, h)
+  let delta   = f(xold)/f_prime
+  xnew        = xold - delta
+  xold        = xnew
+
+  f_prime = derivative(f, xold, h)
+  delta   = f(xold)/f_prime
+  xnew    = xold - delta
+  xold    = xnew
+
+  f_prime = derivative(f, xold, h)
+  delta   = f(xold)/f_prime
+  xnew    = xold - delta
+  xold    = xnew
+
+  f_prime = derivative(f, xold, h)
+  delta   = f(xold)/f_prime
+  xnew    = xold - delta
+  xold    = xnew
+
+  f_prime = derivative(f, xold, h)
+  delta   = f(xold)/f_prime
+  xnew    = xold - delta
+  xold    = xnew
+
+  f_prime = derivative(f, xold, h)
+  delta   = f(xold)/f_prime
+  xnew    = xold - delta
+  xold    = xnew
+
+  f_prime = derivative(f, xold, h)
+  delta   = f(xold)/f_prime
+  xnew    = xold - delta
+  xold    = xnew
+
+  f_prime = derivative(f, xold, h)
+  delta   = f(xold)/f_prime
+  xnew    = xold - delta
+  xold    = xnew
+
+  f_prime = derivative(f, xold, h)
+  delta   = f(xold)/f_prime
+  xnew    = xold - delta
+  xold    = xnew
+
+  f_prime = derivative(f, xold, h)
+  delta   = f(xold)/f_prime
+  xnew    = xold - delta
+  xold    = xnew
+
+  f_prime = derivative(f, xold, h)
+  delta   = f(xold)/f_prime
+  xnew    = xold - delta
+  xold    = xnew
+
+  f_prime = derivative(f, xold, h)
+  delta   = f(xold)/f_prime
+  xnew    = xold - delta
+  xold    = xnew
+
+
+  xnew
+}
+
+print("d(x^2)/dx|x= 5   = " + derivative(square, 5, 0.00001))
+print("d(ln(x))/dx|x= 5 = " + derivative(log, 5, 0.00001))
+print("sqrt(5) through Newton-Raphson = " + nr(to_solve, 5, 0.00001))

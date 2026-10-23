@@ -31,8 +31,8 @@ let tf = tf(num, den)
 PROGRAM         = STATEMENTS_LIST
 			          | eof
 
-STATEMENTS_LIST = STATEMENT
-								| STATEMENT STATEMENTS_LIST
+STATEMENTS_LIST = STATEMENT STATEMENTS_LIST
+								| eps
 
 STATEMENT       = "let" id "=" EXPRESSION
 				        | id "=" EXPRESSION
@@ -42,10 +42,10 @@ STATEMENT       = "let" id "=" EXPRESSION
 
 IF_STATEMENT    = "if" EXPRESSION BLOCK ELIF_LIST ELSE_OPT
 
-ELIF_LIST       = "elif" EXPRESSION BLOCK
+ELIF_LIST       = "elif" EXPRESSION BLOCK ELIF_LIST
                 | eps
 
-ELSE_OPT        = "else" EXPRESSION BLOCK
+ELSE_OPT        = "else" BLOCK
                 | eps
 
 FUNCTION_DEF    = "fn" id "(" PARAMS ")" BLOCK
@@ -54,7 +54,7 @@ PARAMS          = id
 				        | PARAMS, id
 				        | eps
 
-BLOCK           = "{" EXPRESSION "}" // This is temporary
+BLOCK           = "{" STATEMENTS_LIST "}"
 
 EXPRESSION      = ADDITIVE COMPOP ADDITIVE
                 | ADDITIVE

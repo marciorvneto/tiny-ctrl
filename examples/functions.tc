@@ -18,17 +18,22 @@ fn fourthpower(x) {
     sqr(sqr(x))
 }
 
-fn factorial(x) {
-  1	
+fn factorial(n) {
+  let result = 1
+  if n > 1 {
+    result = factorial(n-1) * n
+  }
+  result
+}
+
+fn definition_inside(x) {
+  let z = 34
+  z + x
 }
 
 
-let x = 100
+print("2^4 = " + fourthpower(2))
 
-print(addition(2,3))
+print("10! = " + factorial(10))
 
-print(x)
-
-print(fourthpower(2))
-
-print(factorial(0))
+print("log10(10) = " + log10(10))

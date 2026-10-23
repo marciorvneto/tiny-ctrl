@@ -5,6 +5,7 @@
 #include <string.h>
 #include <math.h>
 
+#define LEN(x) sizeof((x))/sizeof((x)[0])
 #define EPSILON 1e-8
 #define CLOSE(x,y) fabs((x)-(y)) < EPSILON
 #define ISZERO(x) CLOSE((x), 0)
@@ -68,9 +69,24 @@ void arena_restore(Arena *a, size_t offset){
 //
 //============================== 
 
+typedef enum {
+  FN_NATIVE,
+  FN_USER
+} FunctionKind;
+
 struct AST;
+
 typedef struct {
-	struct AST* definition;
+  int         native_index;
+  size_t      num_arguments_native;
+} NativeFunctionData;
+
+typedef struct {
+  FunctionKind kind; 
+  union {
+    struct AST*        definition;
+    NativeFunctionData native_data;
+  };
 } Function;
 
 int function_repr(Arena *a, size_t num_args, const char *id, char* buf){
@@ -724,6 +740,7 @@ struct AST {
 			AST *condition;
 			AST *if_block;
 			AST *else_block;
+      int else_is_elif;
 		} if_stmt;
 
 		struct {
@@ -890,6 +907,7 @@ AST *parse_unary(Arena *a, AST *parent, Parser *parser);
 AST *parse_expo(Arena *a, AST *parent, Parser *parser);
 AST *parse_primary(Arena *a, AST *parent, Parser *parser);
 AST *parse_array(Arena *a, AST *parent, Parser *parser);
+AST *parse_statements_list(Arena *a, AST *program_node, Parser *parser);
 
 
 AST *parse_array(Arena *a, AST *parent, Parser *parser){
@@ -1124,9 +1142,9 @@ void parse_params(Arena *a, AST *fn_def, Parser *parser){
 
 AST *parse_block(Arena *a, AST *parent, Parser *parser){
   if(parser_eat(TOK_LCURLY, parser) == NULL) return NULL;
-  AST *expr = parse_expression(a, parent, parser);
+  AST *list = parse_statements_list(a, parent, parser);
   if(parser_eat(TOK_RCURLY, parser) == NULL) return NULL;
-  return expr;
+  return list;
 }
 
 AST *parse_statement(Arena *a, AST *parent, Parser *parser){
@@ -1176,28 +1194,31 @@ AST *parse_statement(Arena *a, AST *parent, Parser *parser){
   {
 		AST *stmt = ast_make_statement(a, STATEMENT_IF);
     parser_eat(TOK_KEYWORD, parser);
-		AST *condition             = parse_expression(a, stmt, parser);
-		AST *if_block              = parse_block(a, stmt, parser);
-		stmt->as.if_stmt.condition = condition;
-		stmt->as.if_stmt.if_block  = if_block;
+		AST *condition                = parse_expression(a, stmt, parser);
+		AST *if_block                 = parse_block(a, stmt, parser);
+		stmt->as.if_stmt.condition    = condition;
+		stmt->as.if_stmt.if_block     = if_block;
+		stmt->as.if_stmt.else_is_elif = 0;
 
 		AST *current = stmt;
 
 		while(parser_peek(parser)->type == TOK_KEYWORD && (strcmp(parser_peek(parser)->value, "elif") == 0)){
 			parser_eat(TOK_KEYWORD, parser);
 
-			AST *elif_stmt                  = ast_make_statement(a, STATEMENT_IF);
-			elif_stmt->parent               = current;
-			elif_stmt->as.if_stmt.condition = parse_expression(a, elif_stmt, parser);
-			elif_stmt->as.if_stmt.if_block  = parse_block(a, elif_stmt, parser);
-			current->as.if_stmt.else_block  = elif_stmt;
-			current                         = elif_stmt;
+			AST *elif_stmt                   = ast_make_statement(a, STATEMENT_IF);
+			elif_stmt->parent                = current;
+			elif_stmt->as.if_stmt.condition  = parse_expression(a, elif_stmt, parser);
+			elif_stmt->as.if_stmt.if_block   = parse_block(a, elif_stmt, parser);
+			current->as.if_stmt.else_block   = elif_stmt;
+      current->as.if_stmt.else_is_elif = 1;
+			current                          = elif_stmt;
 
 		}
 
 		if(parser_peek(parser)->type == TOK_KEYWORD && (strcmp(parser_peek(parser)->value, "else") == 0)){
 			parser_eat(TOK_KEYWORD, parser);
-			current->as.if_stmt.else_block = parse_block(a, stmt, parser);
+			current->as.if_stmt.else_block   = parse_block(a, stmt, parser);
+			current->as.if_stmt.else_is_elif = 0;
 		}
 
     return stmt;
@@ -1235,35 +1256,33 @@ AST *parse_statement(Arena *a, AST *parent, Parser *parser){
   return NULL;
 }
 
-AST *parse_statements_list(Arena *a, AST *program_node, Parser *parser){
-	if(parser_done(parser)) return NULL;
-
+AST *parse_statements_list(Arena *a, AST *parent, Parser *parser){
 	size_t num_statements = 0;
-
 	AST *head = NULL;
 	AST *tail = NULL;
-	head = parse_statement(a, program_node, parser);
-	head->parent = program_node;
-	if(head == NULL){
-		fprintf(stderr, "Parsing error at position %zu\n", parser->offset);
-		return NULL;
-	}
 
-	num_statements++;
-	tail = head;
+  while(!parser_done(parser)
+        && parser_peek(parser)->type != TOK_RCURLY
+      )
+  {
+    size_t before = parser->offset;
 
-	while(!parser_done(parser)){
-		AST *stmt = parse_statement(a, program_node, parser);
-		if(stmt == NULL){
-			break;
-		}
-		stmt->parent = program_node;
-		tail->next   = stmt;
-		tail         = stmt;
-		num_statements++;
-	}
+    AST *stmt = parse_statement(a, parent, parser);
 
-	program_node->as.program.num_statements = num_statements;
+    if (stmt == NULL || parser->offset == before) {
+      return NULL;
+    }
+
+    stmt->parent = parent;
+
+    if (tail)
+      tail->next = stmt;
+    else
+      head = stmt;
+
+    tail = stmt;
+  }
+
 	return head;
 }
 
@@ -1377,12 +1396,15 @@ struct Environment {
 	Environment *parent;
 };
 
+void initialize_native_fns(Environment *e, Arena *a);
 void env_init(Environment *e, Arena *a){
   e->persistent = a;
 	e->vars       = arena_alloc(a, 32 * sizeof(Variable));
 	e->num_vars   = 0;
 	e->parent     = NULL;
+  initialize_native_fns(e, a);
 }
+
 
 Environment env_create(Arena *a){
 	Environment e;
@@ -1820,6 +1842,15 @@ TransferFunction tf_simplify(Arena *a, TransferFunction *tf){
 
 	return new_tf;
 }
+
+//============================
+//
+//   Dispatcher types
+//
+//============================
+
+typedef Value (*NativeValueDispatch)(Arena *a, size_t argc, Value *argv);
+typedef Value (*UnaryValueDispatch)(Arena *a, Value *caller, Value *value);
 
 //============================
 //
@@ -2608,6 +2639,54 @@ static const BinaryFn binop_dispatch[OP_TYPE_LIST_COUNT][VALUE_TYPE_COUNT][VALUE
 };
 
 
+//====================================
+//
+//   Native functions
+//
+//====================================
+
+Value native_abs(Arena *a, size_t argc, Value *argv){ 
+  return make_num(fabs(argv[0].value.number));
+}
+Value native_log(Arena *a, size_t argc, Value *argv){ 
+  return make_num(log(argv[0].value.number));
+}
+Value native_exp(Arena *a, size_t argc, Value *argv){ 
+  return make_num(exp(argv[0].value.number));
+}
+Value native_sin(Arena *a, size_t argc, Value *argv){ 
+  return make_num(sin(argv[0].value.number));
+}
+Value native_cos(Arena *a, size_t argc, Value *argv){
+  return make_num(cos(argv[0].value.number));
+}
+Value native_sqr(Arena *a, size_t argc, Value *argv){ 
+  return make_num(argv[0].value.number * argv[0].value.number);
+}
+Value native_sqrt(Arena *a, size_t argc, Value *argv){ 
+  return make_num(sqrt(argv[0].value.number));
+}
+
+static const NativeValueDispatch native_fns[] = {
+  native_abs,
+  native_log,
+  native_exp,
+  native_sin,
+  native_cos,
+  native_sqr,
+  native_sqrt,
+};
+
+static const char *native_fn_names[] = {
+  "abs",
+  "log",
+  "exp",
+  "sin",
+  "cos",
+  "sqr",
+  "sqrt",
+};
+
 
 Value resolve_variable(Arena *a, Environment *e, Value *literal){
     if(literal->valueType == VALUE_STRING){
@@ -2621,7 +2700,9 @@ Value resolve_variable(Arena *a, Environment *e, Value *literal){
 		return *var->value;
 }
 
+int eval_stmt(Arena* temp_arena, AST *ast, Environment *e, char *script_path, AST *stmt);
 Value eval_expr(Arena *a, Environment *e, char *script_path, AST *expr, int *silent);
+int eval_block( Arena *a, AST *ast, Environment *e, char *script_path, AST *first, Value *result_out);
 
 Value eval_unop(Arena *a, Environment *e, AST *op, Value *arg_given){
 	Value *arg  = arg_given;
@@ -2691,9 +2772,9 @@ Value eval_binop(Arena *a, Environment *e, AST *op, Value *raw_left, Value *raw_
 }
 
 Environment *push_env(Arena *a, Environment *e){
-	Environment *new_env = arena_alloc(a, sizeof(Environment));
-	env_init(new_env, a);
-	new_env->parent      = e;
+	Environment *new_env = arena_alloc(e->persistent, sizeof(Environment));
+	env_init(new_env, e->persistent);
+	new_env->parent = e;
 	return new_env;
 }
 
@@ -2733,7 +2814,14 @@ Value eval_function(Arena *a, Environment *e, AST *fn_call, char *script_path, i
 		return make_nan();
 	}
 
-	size_t expected = fun->value.fun.definition->as.fn_def.num_args;
+  size_t num_args = 0;
+  if(fun->value.fun.kind == FN_NATIVE){
+    num_args = fun->value.fun.native_data.num_arguments_native;
+  }else{
+    num_args = fun->value.fun.definition->as.fn_def.num_args;
+  }
+
+	size_t expected = num_args;
 
 	if ((size_t)argc != expected) {
 		fprintf(stderr,
@@ -2741,6 +2829,17 @@ Value eval_function(Arena *a, Environment *e, AST *fn_call, char *script_path, i
 				fn_name, expected, argc);
 		return make_nan();
 	}
+
+  if(fun->value.fun.kind == FN_NATIVE){
+    int idx = fun->value.fun.native_data.native_index;
+    if(idx < 0 || idx >= LEN(native_fns)){
+      fprintf(stderr, "%s not registered\n", fn_name );
+      return make_nan();
+    }
+    NativeValueDispatch dispatch = native_fns[idx];
+    Value result = dispatch(a, argc, evaluated);
+    return result;
+  }
 
 
 	// Push a new environment for the function scope
@@ -2757,14 +2856,13 @@ Value eval_function(Arena *a, Environment *e, AST *fn_call, char *script_path, i
 			arg       = arg->next,
 			arg_def   = arg_def->next
 		 ){
-		env_set_variable(a, new_env, arg_def->as.literal.value.id, &evaluated[i]);
+		env_set_variable(e->persistent, new_env, arg_def->as.literal.value.id, &evaluated[i]);
 		i++;
 	}
 
-	// Temporary: at the moment, functions only contain one expression
-	AST *expr    = fun->value.fun.definition->as.fn_def.block;
-	Value result = eval_expr(a, new_env, script_path, expr, silent);
-
+	Value result;
+  AST *block = fun->value.fun.definition->as.fn_def.block;
+  int out    = eval_block(a, fn_call, new_env, script_path, block, &result);
 	return result;
 }
 
@@ -2908,7 +3006,6 @@ int import_script(Arena *a, Environment *e, char* importer, char *path){
   return code;
 }
 
-typedef Value (*UnaryValueDispatch)(Arena *a, Value *caller, Value *arg);
 
 Value unary_callable_poly_num(Arena *a, Value *caller, Value *arg){
   return make_num(poly_horner(caller->value.poly, arg->value.number));
@@ -2930,6 +3027,22 @@ UnaryValueDispatch callable_values_dispatch[VALUE_TYPE_COUNT][VALUE_TYPE_COUNT] 
   },
 };
 
+
+
+void initialize_native_fns(Environment *e, Arena *a){
+  for(size_t i = 0; i < LEN(native_fns); i++){
+    NativeFunctionData data = {
+      .num_arguments_native = 1,
+      .native_index         = i
+    };
+    Function native_fn = {
+      .kind        = FN_NATIVE,
+      .native_data = data
+    };
+    Value fn = make_function(native_fn);
+    env_set_variable(a, e, native_fn_names[i], &fn);
+  }
+}
 
 Value eval_func_call(Arena *a, Environment *e, char *script_path, AST *fn, int *silent){
 
@@ -2987,13 +3100,6 @@ Value eval_func_call(Arena *a, Environment *e, char *script_path, AST *fn, int *
 
 		// Basic math on numbers
 
-		if(strcmp(fn->as.fn_call.fn_name, "log") == 0)  { return make_num(logf(val.value.number));}
-		if(strcmp(fn->as.fn_call.fn_name, "exp") == 0)  { return make_num(expf(val.value.number));}
-		if(strcmp(fn->as.fn_call.fn_name, "sin") == 0)  { return make_num(sinf(val.value.number));}
-		if(strcmp(fn->as.fn_call.fn_name, "cos") == 0)  { return make_num(cosf(val.value.number));}
-		if(strcmp(fn->as.fn_call.fn_name, "sqr") == 0)  { return make_num(val.value.number * val.value.number);}
-		if(strcmp(fn->as.fn_call.fn_name, "sqrt") == 0) { return make_num(sqrtf(val.value.number));}
-
 
 		if(strcmp(fn->as.fn_call.fn_name, "poly") == 0) {
 			if(val.valueType == VALUE_ARRAY){
@@ -3008,10 +3114,8 @@ Value eval_func_call(Arena *a, Environment *e, char *script_path, AST *fn, int *
 
     // ---------- Check if there's a suitable variable with name fn_name -----------
 
-    int var_idx = env_variable_idx(a, e, fn->as.fn_call.fn_name);
-    if(var_idx >= 0){
-      Variable *var = env_get_variable_from_idx(a, e, var_idx);
-
+    Variable *var = env_find_variable(a, e,  fn->as.fn_call.fn_name);
+    if(var != NULL){
       if(var->value->valueType >= VALUE_TYPE_COUNT ||
          val.valueType >= VALUE_TYPE_COUNT)
       {
@@ -3019,7 +3123,10 @@ Value eval_func_call(Arena *a, Environment *e, char *script_path, AST *fn, int *
         return make_nan();
       }
 
-      UnaryValueDispatch dispatch = callable_values_dispatch[var->value->valueType][val.valueType];
+      UnaryValueDispatch dispatch = 
+        callable_values_dispatch[var->value->valueType][val.valueType];
+
+
       if(!dispatch){
         printf("Unsupported operation!\n");
         return make_nan();
@@ -3133,6 +3240,39 @@ Value eval_expr(Arena *a, Environment *e, char *script_path, AST *expr, int *sil
 	return value;
 }
 
+int eval_block(
+    Arena *a,
+    AST *ast,
+    Environment *e,
+    char *script_path,
+    AST *first,
+    Value *result_out
+) {
+    Value result = make_num(0);
+
+    for (AST *stmt = first; stmt != NULL; stmt = stmt->next) {
+
+        if (stmt->statement_type == STATEMENT_EXPR) {
+            int silent = 1;
+
+            result = eval_expr(
+                a, e, script_path,
+                stmt->as.statement.expr, &silent
+            );
+        } else {
+            int err = eval_stmt(a, ast, e, script_path, stmt);
+            if (err != 0) return err;
+
+            result = make_num(0);
+        }
+    }
+
+    if (result_out)
+        *result_out = result;
+
+    return 0;
+}
+
 int eval_stmt(Arena* temp_arena, AST *ast, Environment *e, char *script_path, AST *stmt){
 
   int silent = 0;
@@ -3189,37 +3329,42 @@ int eval_stmt(Arena* temp_arena, AST *ast, Environment *e, char *script_path, AS
 		}
 
     Function fun = {
+      .kind       = FN_USER,
       .definition = stmt
     };
-    Value value = make_function(fun);
+    Value value   = make_function(fun);
     env_set_variable(e->persistent, e, id, &value);
 
 		return 0;
 	}
 
-	if(stmt->statement_type == STATEMENT_IF){
+  if(stmt->statement_type == STATEMENT_IF){
+    Value cond = eval_expr(
+        temp_arena, e, script_path,
+        stmt->as.if_stmt.condition, &silent
+        );
 
-		Value cond = eval_expr(temp_arena, e, script_path, stmt->as.if_stmt.condition, &silent);
-		// Coerce this later to truthy/falsy
-		if (cond.valueType != VALUE_NUMBER) {
-			fprintf(stderr, "Expected numeric condition\n");
-			return 1;
-		}
+    if (cond.valueType != VALUE_NUMBER) {
+      fprintf(stderr, "Expected numeric condition\n");
+      return 1;
+    }
 
-		int cond_true = cond.value.number != 0.0;
+    int cond_true = cond.value.number != 0.0;
 
-		if(cond_true){
-			eval_expr(temp_arena, e, script_path, stmt->as.if_stmt.if_block, &silent);
-		}else if(stmt->as.if_stmt.else_block){
-			if(stmt->as.if_stmt.else_block->type == AST_STATEMENT){
-				return eval_stmt(temp_arena, ast, e, script_path, stmt->as.if_stmt.else_block);
-			}else{
-				eval_expr(temp_arena, e, script_path, stmt->as.if_stmt.else_block, &silent);
-			}
-		}
+    AST *branch = cond_true
+      ? stmt->as.if_stmt.if_block
+      : stmt->as.if_stmt.else_block;
 
-		return 0;
-	}
+    if (branch == NULL)
+      return 0;
+
+    if (!cond_true && stmt->as.if_stmt.else_is_elif) {
+      return eval_stmt(temp_arena, ast, e, script_path, branch);
+    }
+
+    Value result;
+    return eval_block(temp_arena, ast, e, script_path, branch, &result);
+  }
 
 	return 0;
 }
