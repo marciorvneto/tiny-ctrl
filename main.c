@@ -2453,13 +2453,11 @@ Value resolve_variable(Arena *a, Environment *e, Value *literal){
     if(literal->valueType == VALUE_STRING){
       return *literal;
     }
-		int idx = -1;
-		if((idx  = env_variable_idx(a, e, literal->value.str)) < 0){
-			// Variable  not  found
+		Variable *var = env_find_variable(a, e, literal->value.str);
+		if(!var) {
 			printf("Undefined variable %s\n", literal->value.str);
 			return make_nan();
 		}
-		Variable *var = env_get_variable_from_idx(a, e, idx);
 		return *var->value;
 }
 

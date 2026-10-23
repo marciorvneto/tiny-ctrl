@@ -18,8 +18,8 @@ fn feedback(G, H) {
   G / (1 + G * H)
 }
 
-fn pid(kp, kd, ki) {
-	kp + kd*s + ki/s
+fn pid(kp, ki, kd) {
+	kp + ki/s + kd*s
 }
 
 fn closedloop(G) {
