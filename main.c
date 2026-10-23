@@ -271,9 +271,10 @@ int tokenizer_eat_char(Tokenizer *tokenizer, char c){
 
 
 size_t tokenizer_is_id(const char *pos){
-	if(!isalpha(pos[0])) return 0;
+	if (!isalpha((unsigned char)pos[0]) && pos[0] != '_')
+		return 0;
 	size_t i = 1;
-	while(isalnum(pos[i])){
+	while(isalnum((unsigned char)pos[i]) || pos[i] == '_'){
 		i += 1;
 	}
 	return i;
