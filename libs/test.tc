@@ -1,0 +1,7 @@
+fn assert_eq(actual, expected){
+  if(actual == expected) {
+	  print("PASS")
+	}else{
+	  print("FAIL")
+	}
+}

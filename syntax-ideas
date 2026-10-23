@@ -37,7 +37,16 @@ STATEMENTS_LIST = STATEMENT
 STATEMENT       = "let" id "=" EXPRESSION
 				        | id "=" EXPRESSION
 				        | FUNCTION_DEF
+				        | IF_STATEMENT
 				        | EXPRESSION
+
+IF_STATEMENT    = "if" EXPRESSION BLOCK ELIF_LIST ELSE_OPT
+
+ELIF_LIST       = "elif" EXPRESSION BLOCK
+                | eps
+
+ELSE_OPT        = "else" EXPRESSION BLOCK
+                | eps
 
 FUNCTION_DEF    = "fn" id "(" PARAMS ")" BLOCK
 

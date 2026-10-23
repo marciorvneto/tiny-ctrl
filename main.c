@@ -347,10 +347,13 @@ Token tokenizer_eat_string(Arena *a, Tokenizer *tokenizer){
 #define KEYWORDS_LIST  \
         X(let)         \
         X(fn)          \
+        X(if)          \
+        X(else)        \
+        X(elif)        \
         V(KEYWORDS_COUNT)
 
 typedef enum {
-#define X(x) x,
+#define X(x) kw_##x,
 #define V(x) x,
   KEYWORDS_LIST
 #undef X
@@ -678,6 +681,7 @@ typedef enum {
 	STATEMENT_DECL_ASSIGN,
 	STATEMENT_ASSIGN,
 	STATEMENT_FUNCTION_DEF,
+	STATEMENT_IF,
 	STATEMENT_EXPR,
 } StatementType;
 
@@ -714,6 +718,12 @@ struct AST {
 			char          *dst;
 			AST           *expr;
 		} statement;
+
+		struct {
+			AST *condition;
+			AST *if_block;
+			AST *else_block;
+		} if_stmt;
 
 		struct {
 			char   *id;
@@ -1158,6 +1168,36 @@ AST *parse_statement(Arena *a, AST *parent, Parser *parser){
     parser_eat(TOK_RPAREN, parser);
 
     stmt->as.fn_def.block = parse_block(a, stmt, parser);
+
+    return stmt;
+
+  }else if(current->type == TOK_KEYWORD && (strcmp(current->value, "if") == 0)) 
+  {
+		AST *stmt = ast_make_statement(a, STATEMENT_IF);
+    parser_eat(TOK_KEYWORD, parser);
+		AST *condition             = parse_expression(a, stmt, parser);
+		AST *if_block              = parse_block(a, stmt, parser);
+		stmt->as.if_stmt.condition = condition;
+		stmt->as.if_stmt.if_block  = if_block;
+
+		AST *current = stmt;
+
+		while(parser_peek(parser)->type == TOK_KEYWORD && (strcmp(parser_peek(parser)->value, "elif") == 0)){
+			parser_eat(TOK_KEYWORD, parser);
+
+			AST *elif_stmt                  = ast_make_statement(a, STATEMENT_IF);
+			elif_stmt->parent               = current;
+			elif_stmt->as.if_stmt.condition = parse_expression(a, elif_stmt, parser);
+			elif_stmt->as.if_stmt.if_block  = parse_block(a, elif_stmt, parser);
+			current->as.if_stmt.else_block  = elif_stmt;
+			current                         = elif_stmt;
+
+		}
+
+		if(parser_peek(parser)->type == TOK_KEYWORD && (strcmp(parser_peek(parser)->value, "else") == 0)){
+			parser_eat(TOK_KEYWORD, parser);
+			current->as.if_stmt.else_block = parse_block(a, stmt, parser);
+		}
 
     return stmt;
 
@@ -2345,6 +2385,9 @@ Value cat_str_str(Arena *a, Value *left, Value *right){
   char *str2 = right->value.str;
   return make_string(cat_strings(a, str1, str2));
 }
+Value eq_str_str(Arena *a, Value *left, Value *right){
+		return make_num(strcmp(left->value.str, right->value.str) == 0);
+}
 
 
 
@@ -2531,6 +2574,9 @@ static const BinaryFn binop_dispatch[OP_TYPE_LIST_COUNT][VALUE_TYPE_COUNT][VALUE
 	[OP_DBL_EQ] = {
 		[VALUE_NUMBER] = {
 			[VALUE_NUMBER] = eq_num_num,
+		},
+		[VALUE_STRING] = {
+			[VALUE_STRING] = eq_str_str,
 		}
 	},
 
@@ -3146,6 +3192,30 @@ int eval_stmt(Arena* temp_arena, AST *ast, Environment *e, char *script_path, AS
     };
     Value value = make_function(fun);
     env_set_variable(e->persistent, e, id, &value);
+
+		return 0;
+	}
+
+	if(stmt->statement_type == STATEMENT_IF){
+
+		Value cond = eval_expr(temp_arena, e, script_path, stmt->as.if_stmt.condition, &silent);
+		// Coerce this later to truthy/falsy
+		if (cond.valueType != VALUE_NUMBER) {
+			fprintf(stderr, "Expected numeric condition\n");
+			return 1;
+		}
+
+		int cond_true = cond.value.number != 0.0;
+
+		if(cond_true){
+			eval_expr(temp_arena, e, script_path, stmt->as.if_stmt.if_block, &silent);
+		}else if(stmt->as.if_stmt.else_block){
+			if(stmt->as.if_stmt.else_block->type == AST_STATEMENT){
+				return eval_stmt(temp_arena, ast, e, script_path, stmt->as.if_stmt.else_block);
+			}else{
+				eval_expr(temp_arena, e, script_path, stmt->as.if_stmt.else_block, &silent);
+			}
+		}
 
 		return 0;
 	}
