@@ -1,4 +1,5 @@
 #include <ctype.h>
+#include <complex.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1795,7 +1796,13 @@ double poly_horner(Polynomial p, double x){
 
 }
 
-void poly_horner_with_derivative(Polynomial p, double x, double *val_out, double *der_out){
+void poly_horner_with_derivative(
+    Polynomial p,
+    double complex x,
+    double complex *val_out,
+    double complex *der_out
+    )
+{
 
   // P(x)  = a0 + a1*x + a2*x^2 + ... + an*x^n
   // P(x)  = a0 + x * (a1 + x * (a2 + x * (a3) ))
@@ -1820,6 +1827,61 @@ void poly_horner_with_derivative(Polynomial p, double x, double *val_out, double
   if(der_out) *der_out = der;
 
 }
+
+void poly_aberth_solve(Polynomial poly, double complex *roots){
+  double *coeffs = poly.coeffs;
+  size_t deg     = poly.deg;
+
+  // Cauchy radius
+
+  double radius = -1;
+  for(size_t i = 0; i < deg; i++){ if(radius < fabs(coeffs[i]/coeffs[deg])) radius = fabs(coeffs[i]/coeffs[deg]); }
+
+  double M = radius + 1;
+  for(size_t i = 0; i < deg; i++){
+    roots[i] = M * cexp(2 * M_PI * i * I / deg);
+  }
+
+  double complex *temp = malloc(deg * sizeof(double complex));
+
+  // Iterations
+
+
+  double complex delta = 0;
+  double complex zi    = 0;
+  double complex zj    = 0;
+  double complex pz    = 0;
+  double complex der   = 0;
+  double complex sum   = 0;
+
+  for(size_t iter = 0; iter < 100; iter++){
+
+    for(size_t i = 0; i < deg; i++){
+      sum = 0;
+      zi  = roots[i];
+      poly_horner_with_derivative(poly, zi, &pz, &der);
+
+      for(size_t j = 0; j < deg; j++){
+        if(i == j) continue;
+        zj  = roots[j];
+        sum += 1/(zi - zj);
+      }
+
+      delta = pz/der/(1 - pz/der * sum);
+
+      temp[i] = -delta;
+
+    }
+
+    for(size_t i = 0; i < deg; i++){ roots[i] += temp[i]; }
+
+  }
+
+  free(temp);
+
+}
+
+
 
 Polynomial poly_gcd(Arena *arena, Polynomial a, Polynomial b){
 	// Euclid'a gcd algorithm for polynomials
