@@ -1,4 +1,6 @@
 let y = (1,)
 let x = (1,2,3,)
+let p = poly([1,2]) / poly([1,2,3,4])
+let z = (1,p,[1,2,3],)
 
-print(x)
+print(z)

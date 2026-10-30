@@ -1117,6 +1117,7 @@ AST *parse_primary(Arena *pa, AST *parent, Parser *parser) {
       (parser->next = save, primary = parse_fn_call(pa, parent, parser))    ||
       (parser->next = save, primary = parse_id(pa, parent, parser))         ||
       (parser->next = save, primary = parse_string(pa, parent, parser))     ||
+      (parser->next = save, primary = parse_array(pa, parent, parser))      ||
       (parser->next = save, primary = parse_tuple(pa, parent, parser))      ||
       (parser->next = save, primary = parse_paren_expr(pa, parent, parser))
     ){
@@ -3574,7 +3575,7 @@ int eval_stmt(Arena* ta, AST *ast, Environment *e, char *script_path, AST *stmt)
 
 	if(stmt->statement_type == STATEMENT_EXPR){
     SCRATCH_SCOPE(ta){
-      Value result = eval_expr(ta, e, script_path, stmt->as.statement.expr, &silent);
+      Value result = eval_expr(ta, e, script_path, stmt, &silent);
       if(!silent) print_value(ta, e, &result);
     }
 		return 0;
@@ -3692,9 +3693,9 @@ int parse_source(Environment *e,  const char *source, size_t source_len, AST *as
 		return err;
 	}
 
-  for(size_t i = 0; i < num_tokens; i++){
-    token_print(&tokens[i]);
-  }
+  // for(size_t i = 0; i < num_tokens; i++){
+  //   token_print(&tokens[i]);
+  // }
 
 	return parse_tokens(e->persistent, ast, tokens, num_tokens);
 }
