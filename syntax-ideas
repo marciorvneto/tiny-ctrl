@@ -84,11 +84,14 @@ EXPO            = PRIMARY ^ UNARY
 
 PRIMARY         = number
   					    | id "(" ARGS_LIST ")"
+  					    | INDEXING
   					    | id
   					    | '"' + char* + '"'
   					    | "[" ARGS_LIST "]"
   					    | TUPLE
   					    | "(" EXPRESSION ")"
+
+INDEXING        = id "[" EXPRESSION "]"
 
 ARGS_LIST       = EXPRESSION
 				        | ARGS_LIST, EXPRESSION

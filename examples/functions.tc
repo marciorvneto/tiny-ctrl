@@ -1,5 +1,5 @@
-fn addition(x, y) {
-  x + y
+fn addition(x, y){
+	x + y
 }
 
 fn subtraction(x, y) {

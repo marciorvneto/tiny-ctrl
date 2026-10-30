@@ -631,6 +631,7 @@ int tokenize(Arena *a, const char *line, size_t n, Token *tokens , size_t *num_t
 	      X(AST_STATEMENT)         \
 	      X(AST_LITERAL)        \
 	      X(AST_ID)        \
+	      X(AST_INDEXING)        \
 	      X(AST_ARRAY)        \
 	      X(AST_TUPLE)        \
 	      X(AST_UNARY_OP)        \
@@ -793,6 +794,11 @@ struct AST {
 			AST    *first_arg;
 		} fn_call;
 
+		struct   {
+			char   *var_name;
+			AST    *index_expr;
+		} indexing;
+
 		struct {
 			OpType op;
 			AST    *left;
@@ -902,6 +908,15 @@ AST *ast_make_id(Arena *pa, size_t len){
 	expr->as.literal.valueType = VALUE_ID;
 	return expr;
 }
+
+AST *ast_make_indexing(Arena *pa, size_t len){
+	AST *expr = ast_alloc(pa, AST_INDEXING);
+	expr->statement_type         = STATEMENT_EXPR;
+	expr->as.indexing.var_name   = arena_alloc(pa, len + 1);
+	expr->as.indexing.index_expr = NULL;
+	return expr;
+}
+
 
 AST *ast_make_array(Arena *pa){
 	AST *array = ast_alloc(pa, AST_ARRAY);
@@ -1051,6 +1066,22 @@ AST *parse_id(Arena *pa, AST *parent, Parser *parser) {
 		id->parent = parent;
 		return id;
 }
+
+AST *parse_indexing(Arena *pa, AST *parent, Parser *parser){
+    Token *name = parser_eat(TOK_ID, parser);
+    if(!name) return NULL;
+    char *var_name = name->value;
+		if(parser_eat(TOK_LBRACKET, parser) == NULL) return NULL;
+
+		AST *indexing = ast_make_indexing(pa, strlen(var_name));
+    strcpy(indexing->as.indexing.var_name, name->value);
+		AST *expr  = parse_expression(pa, parent, parser);
+		indexing->as.indexing.index_expr = expr;
+
+		if(parser_eat(TOK_RBRACKET, parser) == NULL) return NULL;
+		return indexing;
+}
+
 AST *parse_string(Arena *pa, AST *parent, Parser *parser) {
     Token *current = NULL;
 		if((current = parser_eat(TOK_STRING, parser)) == NULL) return NULL;
@@ -1115,6 +1146,7 @@ AST *parse_primary(Arena *pa, AST *parent, Parser *parser) {
   if(
       (parser->next = save, primary = parse_number(pa, parent, parser))     ||
       (parser->next = save, primary = parse_fn_call(pa, parent, parser))    ||
+      (parser->next = save, primary = parse_indexing(pa, parent, parser))   ||
       (parser->next = save, primary = parse_id(pa, parent, parser))         ||
       (parser->next = save, primary = parse_string(pa, parent, parser))     ||
       (parser->next = save, primary = parse_array(pa, parent, parser))      ||
@@ -1281,7 +1313,6 @@ AST *parse_assignment(Arena *pa, AST *parent, Parser *parser){
 AST *parse_if_stmt(Arena *pa, AST *parent, Parser *parser){
     if(parser_keyword_eat("if", parser)) {
       AST *stmt = ast_make_statement(pa, STATEMENT_IF);
-      parser_eat(TOK_KEYWORD, parser);
       AST *condition                = parse_expression(pa, stmt, parser);
       AST *if_block                 = parse_block(pa, stmt, parser);
       stmt->as.if_stmt.condition    = condition;
@@ -1292,7 +1323,6 @@ AST *parse_if_stmt(Arena *pa, AST *parent, Parser *parser){
       Token *tok   = NULL;
 
       if((tok = parser_peek(parser)) && 
-          tok->type == TOK_KEYWORD && 
           parser_keyword_match("elif", tok))
       {
         parser_eat(TOK_KEYWORD, parser);
@@ -1307,10 +1337,9 @@ AST *parse_if_stmt(Arena *pa, AST *parent, Parser *parser){
 
       }
 
-      if((tok = parser_peek(parser)) && 
-          tok->type == TOK_KEYWORD && 
-          parser_keyword_match("else", tok))
-      {
+			if((tok = parser_peek(parser)) && 
+					parser_keyword_match("else", tok))
+			{
         parser_eat(TOK_KEYWORD, parser);
         current->as.if_stmt.else_block   = parse_block(pa, stmt, parser);
         current->as.if_stmt.else_is_elif = 0;
@@ -1360,8 +1389,8 @@ AST *parse_statement(Arena *pa, AST *parent, Parser *parser){
 
   if(
       (parser->next = save, (stmt = parse_assignment(pa, parent, parser))) ||
-      (parser->next = save, (stmt = parse_fn_def(pa, parent, parser))) ||
       (parser->next = save, (stmt = parse_if_stmt(pa, parent, parser))) ||
+      (parser->next = save, (stmt = parse_fn_def(pa, parent, parser))) ||
       (parser->next = save, (stmt = parse_expression(pa, parent, parser)))
     ) return stmt;
 
@@ -1483,6 +1512,14 @@ void ast_print(AST *ast, int level){
         }
 				break;
 			}
+		case AST_INDEXING:
+			{
+				printf("%sINDEXING[%s]:\n",
+						buf,
+						ast->as.indexing.var_name);
+				ast_print(ast->as.indexing.index_expr, level + 1);
+				break;
+			}
 		case AST_FN_CALL:
 			{
 				printf("%sFN[%s]:\n", buf, ast->as.fn_call.fn_name);
@@ -1563,6 +1600,13 @@ Variable *env_get_variable_from_idx(Environment *e, int idx){
 	return &e->vars[idx];
 }
 
+Variable *env_find_local(Environment *e, const char* name){
+	if(e == NULL) return NULL;
+	int i = env_variable_idx(e, name);
+	if(i >= 0) return env_get_variable_from_idx(e, i);
+	return NULL;
+
+}
 Variable *env_find_variable(Environment *e, const char* name){
 	if(e == NULL) return NULL;
 
@@ -1865,6 +1909,11 @@ char *string_from_num(Arena *a, double num){
 //   Algorithms
 //
 //============================
+
+int modulo(int a, int b){
+	int r = a % b;
+	return a > 0 ? r : r + b;
+}
 
 int poly_is_zero(Polynomial *p){
   double max = -1;
@@ -3195,11 +3244,11 @@ Value eval_function(Arena *ta, Environment *e, AST *fn_call, char *script_path, 
 
 	size_t i = 0;
 	for(
-			AST *arg     = fn_call->as.fn_call.first_arg,
-			    *arg_def = fun->value.fun.definition->as.fn_def.params;
-			arg      != NULL;
-			arg       = arg->next,
-			arg_def   = arg_def->next
+			AST *arg      = fn_call->as.fn_call.first_arg,
+			    *arg_def  = fun->value.fun.definition->as.fn_def.params;
+			arg          != NULL;
+			arg           = arg->next,
+			arg_def       = arg_def->next
 		 ){
 		env_set_variable(new_env, arg_def->as.literal.value.id, &evaluated[i]);
 		i++;
@@ -3461,6 +3510,56 @@ Value eval_func_call(Arena *ta, Environment *e, char *script_path, AST *fn, int 
 
 }
 
+Value eval_indexing(Arena *ta, Environment *e, char *script_path, AST *indexing, int *silent){
+
+  char *name = indexing->as.indexing.var_name;
+	Value val = eval_expr(ta, e, script_path, indexing->as.indexing.index_expr, silent);
+	if(val.valueType != VALUE_NUMBER){
+		printf("Indices must be numbers.%s\n", name);
+		return make_nan();
+	}
+  int idx = (int)val.value.number;
+
+	// Check if it is an indexable variable
+
+	Variable *var = env_find_variable(e, name);
+	if(!var){
+		printf("Undefined variable %s\n", name);
+	}
+
+	if(
+			!(
+					var->value->valueType == VALUE_ARRAY ||
+					var->value->valueType == VALUE_TUPLE 
+			)
+		)
+	{
+		printf("Can't index from variable %s\n", name);
+		return make_nan();
+	}
+
+	if(var->value->valueType == VALUE_ARRAY){
+		int size = (int)var->value->value.array.size;
+		if(idx >= size){
+			printf("Index out of bounds: %s\n", name);
+			return make_nan();
+		}
+		return make_num(var->value->value.array.nums[modulo(idx, size)]);
+	}
+
+	if(var->value->valueType == VALUE_TUPLE){
+		int size = (int)var->value->value.tuple.size;
+		if(idx >= size){
+			printf("Index out of bounds: %s\n", name);
+			return make_nan();
+		}
+		return var->value->value.tuple.items[modulo(idx, size)];
+	}
+
+	return make_nan();
+
+}
+
 
 Value eval_expr(Arena *ta, Environment *e, char *script_path, AST *expr, int *silent){
 	Value value = {0};
@@ -3527,6 +3626,11 @@ Value eval_expr(Arena *ta, Environment *e, char *script_path, AST *expr, int *si
 				value = eval_func_call(ta, e, script_path, expr, silent);
 				break;
 			}
+		case AST_INDEXING:
+			{
+				value = eval_indexing(ta, e, script_path, expr, silent);
+				break;
+			}
 		default:
 			{
 				fprintf(stderr, "Unreachable [eval_expr]\n");
@@ -3551,11 +3655,7 @@ int eval_block(
 
         if (stmt->statement_type == STATEMENT_EXPR) {
             int silent = 1;
-
-            result = eval_expr(
-                ta, e, script_path,
-                stmt->as.statement.expr, &silent
-            );
+            result = eval_expr( ta, e, script_path, stmt, &silent);
         } else {
             int err = eval_stmt(ta, ast, e, script_path, stmt);
             if (err != 0) return err;
@@ -3584,7 +3684,7 @@ int eval_stmt(Arena* ta, AST *ast, Environment *e, char *script_path, AST *stmt)
 	if(stmt->statement_type == STATEMENT_DECL_ASSIGN){
 		char *dst = stmt->as.statement.dst;
 		// Check if it hasn't been defined before
-    if(env_find_variable(e, dst) != NULL){
+    if(env_find_local(e, dst) != NULL){
 			printf("Variable %s has already been defined\n", dst);
 			return 1;
     }
@@ -3601,8 +3701,8 @@ int eval_stmt(Arena* ta, AST *ast, Environment *e, char *script_path, AST *stmt)
 	if(stmt->statement_type == STATEMENT_ASSIGN){
 		char *dst = stmt->as.statement.dst;
 		// Check if it has been defined before
-    if(env_find_variable(e, dst) != NULL){
-			printf("Variable %s has already been defined\n", dst);
+    if(env_find_local(e, dst) == NULL){
+			printf("Variable %s has not been defined\n", dst);
 			return 1;
     }
 
@@ -3841,7 +3941,7 @@ int run_program(Arena *ta, Environment *e, FILE *f, char *script_path){
   AST *ast     = arena_alloc(e->persistent, sizeof(AST));
   parse_code   = parse_source(e,  buffer, len, ast);
 
-  ast_print(ast, 0);
+  // ast_print(ast, 0);
 
   // Evaluation uses temporary memory
   SCRATCH_SCOPE(ta){
