@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <sys/types.h>
 
 #define LEN(x) sizeof((x))/sizeof((x)[0])
 #define EPSILON 1e-8
@@ -100,6 +101,13 @@ typedef struct {
 	double* nums;
 	size_t  size;
 } Array;
+
+typedef struct Value Value;
+typedef struct {
+	Value*  items;
+	size_t size;
+} Tuple;
+
 
 // Example: 3x2 - 5x + 1:
 // coeffs     = [1, -5, 3]
@@ -205,6 +213,7 @@ char *alloc_string(Arena *a, size_t len){
 #define TOK_TYPE_LIST \
 	V(TOK_KEYWORD) \
 	V(TOK_ID) \
+	V(TOK_NL) \
 	V(TOK_STRING) \
 	V(TOK_NUMBER) \
 	X(TOK_LPAREN) \
@@ -426,6 +435,16 @@ int tokenize(Arena *a, const char *line, size_t n, Token *tokens , size_t *num_t
 	while(tokenizer.offset < tokenizer.size){
 		const char *pos = tokenizer.source + tokenizer.offset;
 
+    if(pos[0] == '\n'){
+        Token token = {
+          .type = TOK_NL,
+          .value = "\\n",
+        };
+        tokens[(*num_tokens)++] = token;
+        tokenizer.offset++;
+        continue;
+    }
+
 		if(pos[0] == '/' && pos[1] == '/'){
       while(tokenizer.source[tokenizer.offset] != '\n') {
         tokenizer.offset++;
@@ -613,6 +632,7 @@ int tokenize(Arena *a, const char *line, size_t n, Token *tokens , size_t *num_t
 	      X(AST_LITERAL)        \
 	      X(AST_ID)        \
 	      X(AST_ARRAY)        \
+	      X(AST_TUPLE)        \
 	      X(AST_UNARY_OP)        \
 	      X(AST_BINARY_OP)        \
 	      X(AST_FN_CALL)        \
@@ -691,6 +711,7 @@ typedef enum {
 
 	// Things to think about
 	VALUE_ARRAY,
+	VALUE_TUPLE,
 	VALUE_MATRIX,
 	VALUE_TYPE_COUNT
 } ValueType;
@@ -706,7 +727,7 @@ typedef enum {
 // Forward declarations
 typedef struct AST AST;
 
-typedef struct {
+struct Value {
 	ValueType valueType;
 	union {
 		Polynomial       poly;
@@ -715,9 +736,10 @@ typedef struct {
 		char             *str;
 		char             *id;
 		Array            array;
+		Tuple            tuple;
     Function         fun;
 	} value;
-} Value;
+};
 
 
 struct AST {
@@ -758,6 +780,12 @@ struct AST {
 			AST    *first;
 		} array;
 
+		struct   {
+			size_t size;
+			AST    *first;
+		} tuple;
+
+
 
 		struct   {
 			char   *fn_name;
@@ -797,15 +825,15 @@ void ast_node_print(AST *ast){
 typedef struct {
 	Token  *tokens;
 	size_t num_tokens;
-	size_t offset;
+	size_t next;
 } Parser;
 
 int parser_done(Parser *parser){
-	return !(parser->offset < parser->num_tokens);
+	return !(parser->next < parser->num_tokens);
 }
 
 Token *parser_peek(Parser *parser){
-	if(parser->offset < parser->num_tokens) return &parser->tokens[parser->offset];
+	if(parser->next < parser->num_tokens) return &parser->tokens[parser->next];
 	return NULL;
 }
 
@@ -819,18 +847,34 @@ AST *ast_alloc(Arena *pa, ASTNodeType type){
 Token *parser_eat(TokenType type, Parser *parser){
 	Token *next = parser_peek(parser);
 	if(next->type == type){
-		parser->offset++;
+		parser->next++;
 		return next;
 	}
-	char buf[256];
-	token_type_repr(type, buf);
-	fprintf(stderr, "Expected a token of type %s at position %zu\n", buf, parser->offset);
 	return NULL;
 }
 
+Token *parser_keyword_eat(const char* expected, Parser *parser){
+  Token *kw = parser_eat(TOK_KEYWORD, parser);
+  if(kw == NULL) return NULL;
+  if(strcmp(kw->value, expected) == 0){
+    return kw;
+  }
+	return NULL;
+}
+
+Token *parser_keyword_match(const char* expected, Token *kw){
+  if(kw->type != TOK_KEYWORD) return NULL;
+  if(strcmp(kw->value, expected) == 0){
+    return kw;
+  }
+	return NULL;
+}
+
+
+
 Token *parser_lookahead(Parser *parser){
-	if(parser->offset + 1 >= parser->num_tokens) return NULL;
-	Token *la = &parser->tokens[parser->offset + 1];
+	if(parser->next + 1 >= parser->num_tokens) return NULL;
+	Token *la = &parser->tokens[parser->next + 1];
 	return la;
 }
 
@@ -851,10 +895,10 @@ AST *ast_make_number(Arena *pa, double number){
 	return expr;
 }
 
-AST *ast_make_id(Arena *pa, char *id){
+AST *ast_make_id(Arena *pa, size_t len){
 	AST *expr = ast_alloc(pa, AST_ID);
 	expr->statement_type       = STATEMENT_EXPR;
-	expr->as.literal.value.str = id;
+	expr->as.literal.value.id  = arena_alloc(pa, len + 1);
 	expr->as.literal.valueType = VALUE_ID;
 	return expr;
 }
@@ -865,6 +909,14 @@ AST *ast_make_array(Arena *pa){
 	array->as.array.first = NULL;
 	array->as.array.size  = 0;
 	return array;
+}
+
+AST *ast_make_tuple(Arena *pa){
+	AST *tuple = ast_alloc(pa, AST_TUPLE);
+	tuple->statement_type = STATEMENT_EXPR;
+	tuple->as.tuple.first = NULL;
+	tuple->as.tuple.size  = 0;
+	return tuple;
 }
 
 AST *ast_make_fn_call(Arena *pa, const char *fn_name){
@@ -945,7 +997,10 @@ AST *parse_array(Arena *pa, AST *parent, Parser *parser){
 		return array;
 }
 
-AST *parse_fn_call(Arena *pa, AST *parent, Parser *parser, char* fn_name){
+AST *parse_fn_call(Arena *pa, AST *parent, Parser *parser){
+    Token *name = parser_eat(TOK_ID, parser);
+    if(!name) return NULL;
+    char *fn_name = name->value;
 		if(parser_eat(TOK_LPAREN, parser) == NULL) return NULL;
 		AST *fn_call = ast_make_fn_call(pa, fn_name);
 		if(!parser_done(parser) && parser_peek(parser)->type == TOK_RPAREN){
@@ -979,48 +1034,95 @@ AST *parse_fn_call(Arena *pa, AST *parent, Parser *parser, char* fn_name){
 		return fn_call;
 }
 
-AST *parse_primary(Arena *pa, AST *parent, Parser *parser) {
-	Token *current = parser_peek(parser);
-
-	if(current->type == TOK_NUMBER)
-	{
-		if(parser_eat(TOK_NUMBER, parser) == NULL) return NULL;
+AST *parse_number(Arena *pa, AST *parent, Parser *parser) {
+    Token *current = NULL;
+		if((current = parser_eat(TOK_NUMBER, parser)) == NULL) return NULL;
 		AST *expr = ast_make_number(pa, atof(current->value));
 		expr->parent = parent;
 		return expr;
+}
 
-	} else if(current->type == TOK_STRING){
-		if(parser_eat(TOK_STRING, parser) == NULL) return NULL;
+AST *parse_id(Arena *pa, AST *parent, Parser *parser) {
+    Token *current = NULL;
+		if((current = parser_eat(TOK_ID, parser)) == NULL) return NULL;
+    size_t len = strlen(current->value);
+		AST *id    = ast_make_id(pa, len);
+    strcpy(id->as.literal.value.id, current->value);
+		id->parent = parent;
+		return id;
+}
+AST *parse_string(Arena *pa, AST *parent, Parser *parser) {
+    Token *current = NULL;
+		if((current = parser_eat(TOK_STRING, parser)) == NULL) return NULL;
     size_t len = strlen(current->value);
 		AST *expr = ast_make_string(pa, len);
     strcpy(expr->as.literal.value.str, current->value);
 		expr->parent = parent;
 		return expr;
-	} else if(current->type == TOK_LBRACKET)
-	{
-			AST *array = parse_array(pa, parent, parser);
-			return array;
-	} else if(current->type == TOK_ID)
-	{
-		Token *id_tok = parser_eat(TOK_ID, parser);
+}
 
-		if(!parser_done(parser) && parser_peek(parser)->type == TOK_LPAREN){
-			// Calling a function
-			AST *fn_call = parse_fn_call(pa, parent, parser, id_tok->value);
-			return fn_call;
-		}
 
-		AST *src = ast_make_id(pa, current->value);
-		src->parent = parent;
-		return src;
-	} else
-	{
-		if(parser_eat(TOK_LPAREN, parser) == NULL) return NULL;
-		AST *expr = parse_expression(pa, parent, parser);
-		if(parser_eat(TOK_RPAREN, parser) == NULL) return NULL;
-		return expr;
-	}
-	return NULL;
+AST *parse_tuple_tail(Arena *pa, AST *parent, Parser *parser);
+AST *parse_tuple_rest(Arena *pa, AST *parent, Parser *parser) {
+    if(parser_eat(TOK_COMMA, parser) == NULL) return NULL;
+    return parse_tuple_tail(pa, parent, parser);
+}
+
+AST *parse_tuple_tail(Arena *pa, AST *parent, Parser *parser) {
+    size_t save = parser->next;
+    AST *expr = NULL;
+    if((expr = parse_expression(pa, parent, parser)) == NULL) {
+        parser->next = save; // Restore cursor on epsilon!
+        return NULL;
+    }
+    expr->next = parse_tuple_rest(pa, parent, parser);
+    return expr;
+}
+
+
+AST *parse_tuple(Arena *pa, AST *parent, Parser *parser) {
+    AST* head = NULL;
+    if(parser_eat(TOK_LPAREN, parser) == NULL) return NULL;
+
+    if((head = parse_expression(pa, parent, parser)) == NULL) return NULL;
+    if(parser_eat(TOK_COMMA, parser) == NULL) return NULL;
+
+    head->next = parse_tuple_tail(pa, parent, parser);
+
+    if(parser_eat(TOK_RPAREN, parser) == NULL) return NULL;
+    AST *tuple = ast_make_tuple(pa);
+    tuple->as.tuple.first = head;
+
+    size_t size = 0;
+    for(AST *node = head; node != NULL; node = node->next) { size++; }
+    tuple->as.tuple.size = size;
+    return tuple;
+}
+
+AST *parse_paren_expr(Arena *pa, AST *parent, Parser *parser) {
+    Token *current = NULL;
+    if(parser_eat(TOK_LPAREN, parser) == NULL) return NULL;
+    AST *expr = parse_expression(pa, parent, parser);
+    if(parser_eat(TOK_RPAREN, parser) == NULL) return NULL;
+    return expr;
+}
+
+AST *parse_primary(Arena *pa, AST *parent, Parser *parser) {
+	Token *current = parser_peek(parser);
+  size_t save = parser->next;
+  AST *primary = NULL;
+
+  if(
+      (parser->next = save, primary = parse_number(pa, parent, parser))     ||
+      (parser->next = save, primary = parse_fn_call(pa, parent, parser))    ||
+      (parser->next = save, primary = parse_id(pa, parent, parser))         ||
+      (parser->next = save, primary = parse_string(pa, parent, parser))     ||
+      (parser->next = save, primary = parse_tuple(pa, parent, parser))      ||
+      (parser->next = save, primary = parse_paren_expr(pa, parent, parser))
+    ){
+    return primary;
+  }
+  return NULL;
 }
 
 AST *parse_term(Arena *pa, AST *parent, Parser *parser){
@@ -1050,7 +1152,7 @@ AST *parse_unary(Arena *pa, AST *parent, Parser *parser){
     else if(parser_peek(parser)->type == TOK_MINUS) op = OP_MINUS;
     else return NULL;
 
-    parser->offset++;
+    parser->next++;
 
     AST *unop         = ast_make_unop(pa, op)  ;
     unop->as.unop.arg = parse_unary(pa, unop, parser);
@@ -1122,7 +1224,8 @@ void parse_params(Arena *pa, AST *fn_def, Parser *parser){
 		Token *id_tok = parser_eat(TOK_ID, parser);
 		if(id_tok == NULL) return;
 
-		AST *node  = ast_make_id(pa, id_tok->value);
+		AST *node  = ast_make_id(pa, strlen(id_tok->value));
+    strcpy(node->as.literal.value.id, id_tok->value);
 		node->next = NULL;
 
 		if(tail == NULL){
@@ -1148,111 +1251,118 @@ AST *parse_block(Arena *pa, AST *parent, Parser *parser){
   return list;
 }
 
+AST *parse_assignment(Arena *pa, AST *parent, Parser *parser){
+  Token *current = NULL;
+  AST   *stmt    = NULL;
+  if((current = parser_peek(parser)) && 
+      parser_keyword_eat("let", parser))
+  {
+    stmt = ast_make_statement(pa, STATEMENT_DECL_ASSIGN);
+  }else{
+    stmt = ast_make_statement(pa, STATEMENT_ASSIGN);
+  }
+
+  Token *id = NULL;
+  if((id = parser_eat(TOK_ID, parser)) == NULL) return NULL;
+
+  stmt->as.statement.dst  = arena_alloc(pa, strlen(id->value) + 1);
+  strcpy(stmt->as.statement.dst, id->value);
+
+  if((id = parser_eat(TOK_EQ, parser)) == NULL) return NULL;
+
+  AST *expr               = parse_expression(pa, stmt, parser);
+  stmt->as.statement.expr = expr;
+
+  if(parser_eat(TOK_NL, parser) == NULL) return NULL;
+  return stmt;
+}
+
+AST *parse_if_stmt(Arena *pa, AST *parent, Parser *parser){
+    if(parser_keyword_eat("if", parser)) {
+      AST *stmt = ast_make_statement(pa, STATEMENT_IF);
+      parser_eat(TOK_KEYWORD, parser);
+      AST *condition                = parse_expression(pa, stmt, parser);
+      AST *if_block                 = parse_block(pa, stmt, parser);
+      stmt->as.if_stmt.condition    = condition;
+      stmt->as.if_stmt.if_block     = if_block;
+      stmt->as.if_stmt.else_is_elif = 0;
+
+      AST *current = stmt;
+      Token *tok   = NULL;
+
+      if((tok = parser_peek(parser)) && 
+          tok->type == TOK_KEYWORD && 
+          parser_keyword_match("elif", tok))
+      {
+        parser_eat(TOK_KEYWORD, parser);
+
+        AST *elif_stmt                   = ast_make_statement(pa, STATEMENT_IF);
+        elif_stmt->parent                = current;
+        elif_stmt->as.if_stmt.condition  = parse_expression(pa, elif_stmt, parser);
+        elif_stmt->as.if_stmt.if_block   = parse_block(pa, elif_stmt, parser);
+        current->as.if_stmt.else_block   = elif_stmt;
+        current->as.if_stmt.else_is_elif = 1;
+        current                          = elif_stmt;
+
+      }
+
+      if((tok = parser_peek(parser)) && 
+          tok->type == TOK_KEYWORD && 
+          parser_keyword_match("else", tok))
+      {
+        parser_eat(TOK_KEYWORD, parser);
+        current->as.if_stmt.else_block   = parse_block(pa, stmt, parser);
+        current->as.if_stmt.else_is_elif = 0;
+      }
+
+      if(parser_eat(TOK_NL, parser) == NULL) return NULL;
+      return stmt;
+    }
+    return NULL;
+}
+
+AST *parse_fn_def(Arena *pa, AST *parent, Parser *parser){
+  if(parser_keyword_eat("fn", parser) == NULL) return NULL;
+  Token *id = NULL;
+
+  AST *stmt = ast_make_statement(pa, STATEMENT_FUNCTION_DEF);
+  if((id = parser_eat(TOK_ID, parser)) == NULL) return NULL;
+
+  parser_eat(TOK_LPAREN, parser);
+
+  size_t len              = strlen(id->value);
+  stmt->as.fn_def.id      = arena_alloc(pa, len + 1);
+  strcpy(stmt->as.fn_def.id, id->value);
+
+  stmt->as.fn_def.id[len] = '\0';
+  parse_params(pa, stmt, parser);
+
+  parser_eat(TOK_RPAREN, parser);
+
+  stmt->as.fn_def.block = parse_block(pa, stmt, parser);
+
+  if(parser_eat(TOK_NL, parser) == NULL) return NULL;
+  return stmt;
+}
+
+AST *parse_expr_stmt(Arena *pa, AST *parent, Parser *parser){
+  AST *expr = parse_expression(pa, parent, parser);
+  if(expr == NULL) return NULL;
+  if(parser_eat(TOK_NL, parser) == NULL) return NULL;
+  return expr;
+}
+
 AST *parse_statement(Arena *pa, AST *parent, Parser *parser){
+  size_t save = parser->next;
 	Token *current = parser_peek(parser);
+  AST *stmt = NULL;
 
-	if(current->type == TOK_KEYWORD && (strcmp(current->value, "let") == 0)){
-		AST *stmt     = ast_make_statement(pa, STATEMENT_DECL_ASSIGN);
-		stmt->parent  = parent;
-
-		if(parser_eat(TOK_KEYWORD, parser) == NULL) return NULL;
-		Token *id_tok = parser_eat(TOK_ID, parser);
-
-		if(id_tok == NULL){
-			return NULL;
-		}
-
-		if(parser_eat(TOK_EQ, parser) == NULL) return NULL;
-
-		stmt->as.statement.dst  = arena_alloc(pa, strlen(id_tok->value) + 1);
-		strcpy(stmt->as.statement.dst, id_tok->value);
-
-		AST *expr               = parse_expression(pa, stmt, parser);
-		stmt->as.statement.expr = expr;
-
-		return stmt;
-  }else if(current->type == TOK_KEYWORD && (strcmp(current->value, "fn") == 0)) 
-  {
-		AST *stmt = ast_make_statement(pa, STATEMENT_FUNCTION_DEF);
-    parser_eat(TOK_KEYWORD, parser);
-    Token *id = parser_eat(TOK_ID, parser);
-    parser_eat(TOK_LPAREN, parser);
-
-    size_t len              = strlen(id->value);
-    stmt->as.fn_def.id      = arena_alloc(pa, len + 1);
-    strcpy(stmt->as.fn_def.id, id->value);
-
-    stmt->as.fn_def.id[len] = '\0';
-    parse_params(pa, stmt, parser);
-
-    parser_eat(TOK_RPAREN, parser);
-
-    stmt->as.fn_def.block = parse_block(pa, stmt, parser);
-
-    return stmt;
-
-  }else if(current->type == TOK_KEYWORD && (strcmp(current->value, "if") == 0)) 
-  {
-		AST *stmt = ast_make_statement(pa, STATEMENT_IF);
-    parser_eat(TOK_KEYWORD, parser);
-		AST *condition                = parse_expression(pa, stmt, parser);
-		AST *if_block                 = parse_block(pa, stmt, parser);
-		stmt->as.if_stmt.condition    = condition;
-		stmt->as.if_stmt.if_block     = if_block;
-		stmt->as.if_stmt.else_is_elif = 0;
-
-		AST *current = stmt;
-
-		while(parser_peek(parser)->type == TOK_KEYWORD && (strcmp(parser_peek(parser)->value, "elif") == 0)){
-			parser_eat(TOK_KEYWORD, parser);
-
-			AST *elif_stmt                   = ast_make_statement(pa, STATEMENT_IF);
-			elif_stmt->parent                = current;
-			elif_stmt->as.if_stmt.condition  = parse_expression(pa, elif_stmt, parser);
-			elif_stmt->as.if_stmt.if_block   = parse_block(pa, elif_stmt, parser);
-			current->as.if_stmt.else_block   = elif_stmt;
-      current->as.if_stmt.else_is_elif = 1;
-			current                          = elif_stmt;
-
-		}
-
-		if(parser_peek(parser)->type == TOK_KEYWORD && (strcmp(parser_peek(parser)->value, "else") == 0)){
-			parser_eat(TOK_KEYWORD, parser);
-			current->as.if_stmt.else_block   = parse_block(pa, stmt, parser);
-			current->as.if_stmt.else_is_elif = 0;
-		}
-
-    return stmt;
-
-	}else if
-		(
-			current->type == TOK_ID  &&  
-			parser_lookahead(parser)  != NULL  &&
-			parser_lookahead(parser)->type  == TOK_EQ
-		)
-	{
-		AST *stmt    = ast_make_statement(pa, STATEMENT_ASSIGN);
-		stmt->parent = parent;
-
-		Token *id_tok = parser_eat(TOK_ID, parser);
-		if(id_tok == NULL){
-			return NULL;
-		}
-		if(parser_eat(TOK_EQ, parser) == NULL) return NULL;
-
-		stmt->as.statement.dst  = arena_alloc(pa, strlen(id_tok->value) + 1);
-		strcpy(stmt->as.statement.dst, id_tok->value);
-
-		AST *expr               = parse_expression(pa, stmt, parser);
-		stmt->as.statement.expr = expr;
-
-		return stmt;
-	}else{
-		AST *stmt               = ast_make_statement(pa, STATEMENT_EXPR);
-		AST *expr               = parse_expression(pa, stmt, parser);
-		stmt->as.statement.expr = expr;
-		return stmt;
-	}
+  if(
+      (parser->next = save, (stmt = parse_assignment(pa, parent, parser))) ||
+      (parser->next = save, (stmt = parse_fn_def(pa, parent, parser))) ||
+      (parser->next = save, (stmt = parse_if_stmt(pa, parent, parser))) ||
+      (parser->next = save, (stmt = parse_expression(pa, parent, parser)))
+    ) return stmt;
 
   return NULL;
 }
@@ -1262,15 +1372,22 @@ AST *parse_statements_list(Arena *pa, AST *parent, Parser *parser){
 	AST *head = NULL;
 	AST *tail = NULL;
 
-  while(!parser_done(parser)
-        && parser_peek(parser)->type != TOK_RCURLY
-      )
+  while(!parser_done(parser))
   {
-    size_t before = parser->offset;
+
+    while(!parser_done(parser) && parser_peek(parser)->type == TOK_NL) {
+      parser_eat(TOK_NL, parser);
+    }
+
+    if(parser_done(parser) || parser_peek(parser)->type == TOK_RCURLY) {
+      break;
+    }
+
+    size_t before = parser->next;
 
     AST *stmt = parse_statement(pa, parent, parser);
 
-    if (stmt == NULL || parser->offset == before) {
+    if (stmt == NULL || parser->next == before) {
       return NULL;
     }
 
@@ -1296,7 +1413,7 @@ int parse_tokens(Arena *pa, AST *ast, Token *tokens, size_t num_tokens){
 	Parser parser;
 	parser.num_tokens = num_tokens;
 	parser.tokens     = tokens;
-	parser.offset     = 0;
+	parser.next       = 0;
 
 	if(num_tokens == 0) return 0;
 
@@ -1350,6 +1467,19 @@ void ast_print(AST *ast, int level){
 				} else if(ast->as.literal.valueType == VALUE_NUMBER){
 					printf("%sLIT: %.2f\n", buf, ast->as.literal.value.number);
 				}
+				break;
+			}
+		case AST_TUPLE:
+			{
+				printf("%sTUPLE[%zu]:\n", buf, ast->as.tuple.size);
+        for(
+            AST* node = ast->as.tuple.first;
+            node != NULL;
+            node = node->next
+          )
+        {
+					ast_print(node, level + 1);
+        }
 				break;
 			}
 		case AST_FN_CALL:
@@ -1514,12 +1644,26 @@ Value make_function(Function fun){
 	return v;
 }
 
+Value value_clone(Arena *a, Value *v);
+
 Array clone_array(Arena *a, Array *old){
   Array arr;
   arr.size = old->size;
   arr.nums = arena_alloc(a, arr.size * sizeof(double));
   memcpy(arr.nums, old->nums, arr.size * sizeof(double));
   return arr;
+}
+
+Tuple clone_tuple(Arena *a, Tuple *src){
+  Tuple dst;
+
+  dst.size  = src->size;
+  dst.items = arena_alloc(a, src->size * sizeof(Value));
+
+  for(size_t i = 0; i < src->size; i++){
+    dst.items[i] = value_clone(a, &src->items[i]);
+  }
+  return dst;
 }
 
 Polynomial clone_poly(Arena *a, Polynomial *p){
@@ -1564,6 +1708,11 @@ Value value_clone(Arena *a, Value *v){
     case VALUE_ARRAY: 
       {
         copy.value.array = clone_array(a, &v->value.array);
+        break;
+      }
+    case VALUE_TUPLE: 
+      {
+        copy.value.tuple = clone_tuple(a, &v->value.tuple);
         break;
       }
     case VALUE_POLYNOMIAL: 
@@ -3104,6 +3253,15 @@ void print_value(Arena *ta, Environment *e, Value *value){
 				printf("]\n");
 				break;
 			}
+		case VALUE_TUPLE:
+			{
+				printf("(\n");
+				for(size_t i = 0; i < value->value.tuple.size; i++){
+          print_value(ta, e, &value->value.tuple.items[i]);
+				}
+				printf(")\n");
+				break;
+			}
 		case VALUE_POLYNOMIAL:
 			{
         char buf[1024];
@@ -3337,6 +3495,19 @@ Value eval_expr(Arena *ta, Environment *e, char *script_path, AST *expr, int *si
 				}
 				break;
 			}
+		case AST_TUPLE:
+			{
+				value.valueType        = VALUE_TUPLE;
+				value.value.tuple.size = expr->as.tuple.size;
+				value.value.tuple.items = arena_alloc(ta, expr->as.tuple.size * sizeof(Value));
+        size_t i = 0;
+        for(AST *item = expr->as.tuple.first; item != NULL; item = item->next){
+					Value item_value = eval_expr(ta, e, script_path, item, silent);
+					value.value.tuple.items[i] = item_value;
+          i++;
+        }
+				break;
+			}
 		case AST_BINARY_OP:
 			{
 				Value left  = eval_expr(ta,  e, script_path, expr->as.binop.left, silent);
@@ -3521,6 +3692,10 @@ int parse_source(Environment *e,  const char *source, size_t source_len, AST *as
 		return err;
 	}
 
+  for(size_t i = 0; i < num_tokens; i++){
+    token_print(&tokens[i]);
+  }
+
 	return parse_tokens(e->persistent, ast, tokens, num_tokens);
 }
 
@@ -3602,7 +3777,6 @@ int launch_repl(Arena *ta, Environment *e, char *script_path){
     AST *ast   = arena_alloc(e->persistent, sizeof(AST));
     parse_code = parse_source(e,  buffer, strlen(buffer), ast);
 
-
     // Evaluation uses temporary memory
     SCRATCH_SCOPE(ta){
       if(parse_code == 0) run_ast(ta, ast, e, script_path);
@@ -3666,6 +3840,7 @@ int run_program(Arena *ta, Environment *e, FILE *f, char *script_path){
   AST *ast     = arena_alloc(e->persistent, sizeof(AST));
   parse_code   = parse_source(e,  buffer, len, ast);
 
+  ast_print(ast, 0);
 
   // Evaluation uses temporary memory
   SCRATCH_SCOPE(ta){

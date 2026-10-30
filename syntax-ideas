@@ -34,11 +34,13 @@ PROGRAM         = STATEMENTS_LIST
 STATEMENTS_LIST = STATEMENT STATEMENTS_LIST
 								| eps
 
-STATEMENT       = "let" id "=" EXPRESSION
+STATEMENT       = ASSIGNMENT   "\n"
+				        | FUNCTION_DEF "\n"
+				        | IF_STATEMENT "\n"
+				        | EXPRESSION   "\n"
+
+ASSIGNMENT      = "let" id "=" EXPRESSION
 				        | id "=" EXPRESSION
-				        | FUNCTION_DEF
-				        | IF_STATEMENT
-				        | EXPRESSION
 
 IF_STATEMENT    = "if" EXPRESSION BLOCK ELIF_LIST ELSE_OPT
 
@@ -65,12 +67,12 @@ COMPOP          = ==
   					    | > 
   					    | < 
 
-ADDITIVE        = ADDITIVE + TERM
-  					    | ADDITIVE - TERM
+ADDITIVE        = TERM + ADDITIVE
+  					    | TERM + ADDITIVE
   					    | TERM
 
-TERM            = TERM * UNARY
-  					    | TERM / UNARY
+TERM            = UNARY * TERM
+  					    | UNARY / TERM
   					    | UNARY
 
 UNARY           = "+" UNARY
@@ -85,9 +87,17 @@ PRIMARY         = number
   					    | '"' + char* + '"'
   					    | id "(" ARGS_LIST ")"
   					    | "[" ARGS_LIST "]"
+  					    | TUPLE
   					    | "(" EXPRESSION ")"
-
 
 ARGS_LIST       = EXPRESSION
 				        | ARGS_LIST, EXPRESSION
 				        | eps
+
+TUPLE           = "(" EXPRESSION "," TUPLE_TAIL ")"
+
+TUPLE_TAIL      = EXPRESSION TUPLE_REST
+                | eps
+
+TUPLE_REST      = "," TUPLE_TAIL
+                | eps
