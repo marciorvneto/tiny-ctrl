@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include <string.h>
 #include <math.h>
 #include <sys/types.h>
@@ -17,6 +18,10 @@
 #define UNREACHABLE(x) do { fprintf(stderr, "Unreachable: " x); exit(1); } while(0);
 #define MAX(x,y) ((x) > (y) ? (x) : (y))
 #define MIN(x,y) ((x) < (y) ? (x) : (y))
+
+#define ABERTH_TOL 1e-12
+#define ABERTH_MAX_ITER 1000
+
 
 //============================== 
 //
@@ -701,6 +706,7 @@ OpType op_from_tok(TokenType type){
 typedef enum {
 	VALUE_ID,
 	VALUE_NUMBER,
+	VALUE_COMPLEX,
 	VALUE_STRING,
 	VALUE_POLYNOMIAL,
 	VALUE_TRANSFER_FUNCTION,
@@ -734,6 +740,7 @@ struct Value {
 		Polynomial       poly;
 		TransferFunction tf;
 		double           number;
+		double complex   complex_number;
 		char             *str;
 		char             *id;
 		Array            array;
@@ -851,6 +858,7 @@ AST *ast_alloc(Arena *pa, ASTNodeType type){
 }
 
 Token *parser_eat(TokenType type, Parser *parser){
+	if(parser_done(parser)) return NULL;
 	Token *next = parser_peek(parser);
 	if(next->type == type){
 		parser->next++;
@@ -1285,6 +1293,7 @@ AST *parse_block(Arena *pa, AST *parent, Parser *parser){
 }
 
 AST *parse_assignment(Arena *pa, AST *parent, Parser *parser){
+	size_t save    = parser->next;
   Token *current = NULL;
   AST   *stmt    = NULL;
   if((current = parser_peek(parser)) && 
@@ -1292,6 +1301,7 @@ AST *parse_assignment(Arena *pa, AST *parent, Parser *parser){
   {
     stmt = ast_make_statement(pa, STATEMENT_DECL_ASSIGN);
   }else{
+		parser->next = save;
     stmt = ast_make_statement(pa, STATEMENT_ASSIGN);
   }
 
@@ -1389,8 +1399,8 @@ AST *parse_statement(Arena *pa, AST *parent, Parser *parser){
 
   if(
       (parser->next = save, (stmt = parse_assignment(pa, parent, parser))) ||
-      (parser->next = save, (stmt = parse_if_stmt(pa, parent, parser))) ||
-      (parser->next = save, (stmt = parse_fn_def(pa, parent, parser))) ||
+      (parser->next = save, (stmt = parse_if_stmt(pa, parent, parser)))    ||
+      (parser->next = save, (stmt = parse_fn_def(pa, parent, parser)))     ||
       (parser->next = save, (stmt = parse_expression(pa, parent, parser)))
     ) return stmt;
 
@@ -1673,6 +1683,13 @@ Value make_num(double num){
 	};
 	return v;
 }
+Value make_complex(double complex num){
+	Value v = {
+		.valueType    = VALUE_COMPLEX,
+		.value.number = num
+	};
+	return v;
+}
 Value make_array(Array arr){
 	Value v = {
 		.valueType   = VALUE_ARRAY,
@@ -1740,6 +1757,16 @@ char *clone_string(Arena *a, char *old){
 Value value_clone(Arena *a, Value *v){
   Value copy = *v;
   switch(v->valueType){
+    case VALUE_COMPLEX: 
+      {
+        copy.value.complex_number = v->value.complex_number;
+        break;
+      }
+    case VALUE_NUMBER: 
+      {
+        copy.value.number = v->value.number;
+        break;
+      }
     case VALUE_ID: 
       {
         copy.value.id = clone_string(a, v->value.id);
@@ -1794,6 +1821,15 @@ Value make_poly(Polynomial poly){
 	};
 	return v;
 }
+
+Value make_tuple(Tuple tuple){
+	Value v = {
+		.valueType   = VALUE_TUPLE,
+		.value.tuple = tuple
+	};
+	return v;
+}
+
 
 Value make_transfer_function(TransferFunction tf){
 	Value v = {
@@ -2027,58 +2063,109 @@ void poly_horner_with_derivative(
 
 }
 
-void poly_aberth_solve(Polynomial poly, double complex *roots){
-  double *coeffs = poly.coeffs;
-  size_t deg     = poly.deg;
 
-  // Cauchy radius
+void poly_aberth_solve(Arena *ta, Polynomial poly, double complex *roots) {
+    double *coeffs = poly.coeffs;
+    size_t deg = poly.deg;
 
-  double radius = -1;
-  for(size_t i = 0; i < deg; i++){ if(radius < fabs(coeffs[i]/coeffs[deg])) radius = fabs(coeffs[i]/coeffs[deg]); }
-
-  double M = radius + 1;
-  for(size_t i = 0; i < deg; i++){
-    roots[i] = M * cexp(2 * M_PI * i * I / deg);
-  }
-
-  double complex *temp = malloc(deg * sizeof(double complex));
-
-  // Iterations
-
-
-  double complex delta = 0;
-  double complex zi    = 0;
-  double complex zj    = 0;
-  double complex pz    = 0;
-  double complex der   = 0;
-  double complex sum   = 0;
-
-  for(size_t iter = 0; iter < 100; iter++){
-
-    for(size_t i = 0; i < deg; i++){
-      sum = 0;
-      zi  = roots[i];
-      poly_horner_with_derivative(poly, zi, &pz, &der);
-
-      for(size_t j = 0; j < deg; j++){
-        if(i == j) continue;
-        zj  = roots[j];
-        sum += 1/(zi - zj);
-      }
-
-      delta = pz/der/(1 - pz/der * sum);
-
-      temp[i] = -delta;
-
+    if (deg == 0 || coeffs == NULL || roots == NULL ||
+        coeffs[deg] == 0.0) {
+        return;
     }
 
-    for(size_t i = 0; i < deg; i++){ roots[i] += temp[i]; }
+    // Cauchy radius
+    double radius = 0.0;
 
-  }
+    for (size_t i = 0; i < deg; i++) {
+        double ratio = fabs(coeffs[i] / coeffs[deg]);
+        if (ratio > radius) radius = ratio;
+    }
 
-  free(temp);
+    // Initial estimates on a circle
+    double M = radius + 1.0;
+    double pi = acos(-1.0);
 
+    for (size_t i = 0; i < deg; i++) {
+        double theta = 2.0 * pi * i / deg;
+        roots[i] = M * cexp(I * theta);
+    }
+
+    // Scratch memory
+    size_t scratch = arena_save(ta);
+    double complex *temp = arena_alloc(
+        ta, deg * sizeof(double complex)
+    );
+
+    // Aberth-Ehrlich iterations
+    bool converged = false;
+
+    for (size_t iter = 0; iter < ABERTH_MAX_ITER; iter++) {
+        double max_step = 0.0;
+
+        for (size_t i = 0; i < deg; i++) {
+            double complex zi = roots[i];
+            double complex pz, der;
+            double complex sum = 0.0;
+
+            poly_horner_with_derivative(poly, zi, &pz, &der);
+
+            if (pz == 0.0) {
+                temp[i] = 0.0;
+                continue;
+            }
+
+            // Aberth correction
+            for (size_t j = 0; j < deg; j++) {
+                if (i == j) continue;
+
+                double complex diff = zi - roots[j];
+
+                if (diff == 0.0) {
+                    goto cleanup;
+                }
+
+                sum += 1.0 / diff;
+            }
+
+            double complex denom = der - pz * sum;
+
+            if (denom == 0.0) {
+                goto cleanup;
+            }
+
+            double complex delta = pz / denom;
+
+            if (!isfinite(creal(delta)) ||
+                !isfinite(cimag(delta))) {
+                goto cleanup;
+            }
+
+            temp[i] = -delta;
+
+            double step = cabs(delta) / (1.0 + cabs(zi));
+            if (step > max_step) max_step = step;
+        }
+
+        // Simultaneous update
+        for (size_t i = 0; i < deg; i++) {
+            roots[i] += temp[i];
+        }
+
+        // Convergence
+        if (max_step < ABERTH_TOL) {
+            converged = true;
+            break;
+        }
+    }
+
+cleanup:
+    if (!converged) {
+        fprintf(stderr, "Aberth solver did not converge\n");
+    }
+
+    arena_restore(ta, scratch);
 }
+
 
 
 
@@ -2110,6 +2197,13 @@ TransferFunction tf_simplify(Arena *a, TransferFunction *tf){
 	};
 
 	return new_tf;
+}
+
+double complex *tf_poles(Arena *ta, TransferFunction tf){
+	Polynomial den = tf.den;
+	double complex *roots = arena_alloc(ta, den.deg * sizeof(double complex));
+	poly_aberth_solve(ta, den, roots);
+	return roots;
 }
 
 //============================
@@ -3013,6 +3107,25 @@ Value native_polygcd(Arena *a, Environment *e, char* script, size_t argc, Value 
   return make_nan();
 }
 
+Value native_poles(Arena *a, Environment *e, char* script, size_t argc, Value *argv, int *silent){ 
+  Value first = argv[0];
+  if(first.valueType == VALUE_TRANSFER_FUNCTION){
+		TransferFunction tf = first.value.tf;
+		double complex *roots = tf_poles(a, tf);
+
+		Value *values = arena_alloc(a, tf.den.deg * sizeof(Value));
+		for(size_t i = 0; i < tf.den.deg; i++){ values[i] = make_complex(roots[i]); }
+
+		Tuple t = {
+			.size = tf.den.deg,
+			.items = values,
+		};
+		return make_tuple(t);
+  }
+  printf("Unsupported operation, expected a transfer function.\n");
+  return make_nan();
+}
+
 
 static const NativeValueDispatch native_fns[] = {
   native_ls,
@@ -3031,6 +3144,8 @@ static const NativeValueDispatch native_fns[] = {
   native_polymod,
   native_polydiv,
   native_polygcd,
+	// TF
+	native_poles,
 };
 
 static const char *native_fn_names[] = {
@@ -3050,6 +3165,8 @@ static const char *native_fn_names[] = {
   "polymod",
   "polydiv",
   "polygcd",
+	// TF
+	"poles"
 };
 
 static const size_t native_fn_argc[] = {
@@ -3069,6 +3186,8 @@ static const size_t native_fn_argc[] = {
   2,
   2,
   2,
+	// TF
+	1,
 };
 
 
@@ -3284,6 +3403,27 @@ void print_value(Arena *ta, Environment *e, Value *value){
 		case VALUE_NUMBER:
 			{
 				printf("%.4f\n", value->value.number);
+				break;
+			}
+		case VALUE_COMPLEX: 
+			{
+				if(fabs(cimag(value->value.complex_number)) > 1e-12){
+					if(cimag(value->value.complex_number) > 0){
+						printf(
+								"%.4f + %.4f * i\n", 
+								creal(value->value.complex_number),
+								cimag(value->value.complex_number)
+								);
+						break;
+					}
+					printf(
+							"%.4f - %.4f * i\n", 
+							creal(value->value.complex_number),
+							-cimag(value->value.complex_number)
+							);
+					break;
+				}
+				printf("%.4f\n", creal(value->value.complex_number));
 				break;
 			}
 		case VALUE_STRING:
