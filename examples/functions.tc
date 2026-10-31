@@ -15,11 +15,10 @@ fn fourthpower(x) {
 }
 
 fn factorial(n) {
-  let result = 1
   if n > 1 {
-    result = factorial(n-1) * n
+    return factorial(n-1) * n
   }
-  result
+	1
 }
 
 fn definition_inside(x) {

@@ -6,7 +6,7 @@ end
 vim.cmd([[
   syntax case match
 
-  syntax keyword tinyctrlKeyword let fn
+  syntax keyword tinyctrlKeyword let fn return
   syntax keyword tinyctrlConditional if elif else
 
   syntax match tinyctrlNumber /\v<\d+(\.\d+)?([eE][+-]?\d+)?>/

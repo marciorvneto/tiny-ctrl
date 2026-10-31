@@ -382,6 +382,7 @@ Token tokenizer_eat_string(Arena *a, Tokenizer *tokenizer){
         X(if)          \
         X(else)        \
         X(elif)        \
+        X(return)      \
         V(KEYWORDS_COUNT)
 
 typedef enum {
@@ -728,6 +729,7 @@ typedef enum {
 	STATEMENT_ASSIGN,
 	STATEMENT_FUNCTION_DEF,
 	STATEMENT_IF,
+	STATEMENT_RETURN,
 	STATEMENT_EXPR,
 } StatementType;
 
@@ -867,6 +869,7 @@ Token *parser_eat(TokenType type, Parser *parser){
 	return NULL;
 }
 
+
 Token *parser_keyword_eat(const char* expected, Parser *parser){
   Token *kw = parser_eat(TOK_KEYWORD, parser);
   if(kw == NULL) return NULL;
@@ -891,6 +894,14 @@ Token *parser_lookahead(Parser *parser){
 	Token *la = &parser->tokens[parser->next + 1];
 	return la;
 }
+
+int parser_eat_stmt_end(Parser *parser){
+	if(parser_done(parser))                             return 1;
+	if(parser_eat(TOK_NL, parser))                      return 1;
+	if(parser->tokens[parser->next].type == TOK_RCURLY) return 1;
+	return 0;
+}
+
 
 
 AST *ast_make_string(Arena *pa, size_t len){
@@ -1316,7 +1327,7 @@ AST *parse_assignment(Arena *pa, AST *parent, Parser *parser){
   AST *expr               = parse_expression(pa, stmt, parser);
   stmt->as.statement.expr = expr;
 
-  if(parser_eat(TOK_NL, parser) == NULL) return NULL;
+  if(!parser_eat_stmt_end(parser)) return NULL;
   return stmt;
 }
 
@@ -1355,7 +1366,20 @@ AST *parse_if_stmt(Arena *pa, AST *parent, Parser *parser){
         current->as.if_stmt.else_is_elif = 0;
       }
 
-      if(parser_eat(TOK_NL, parser) == NULL) return NULL;
+			if(!parser_eat_stmt_end(parser)) return NULL;
+      return stmt;
+    }
+    return NULL;
+}
+
+AST *parse_return_stmt(Arena *pa, AST *parent, Parser *parser){
+    if(parser_keyword_eat("return", parser)) {
+			size_t save             = parser->next;
+      AST *stmt               = ast_make_statement(pa, STATEMENT_RETURN);
+      AST *expr               = parse_expression(pa, stmt, parser);
+			if(!expr) parser->next  = save;
+			stmt->as.statement.expr = expr;
+			if(!parser_eat_stmt_end(parser)) return NULL;
       return stmt;
     }
     return NULL;
@@ -1381,14 +1405,14 @@ AST *parse_fn_def(Arena *pa, AST *parent, Parser *parser){
 
   stmt->as.fn_def.block = parse_block(pa, stmt, parser);
 
-  if(parser_eat(TOK_NL, parser) == NULL) return NULL;
+	if(!parser_eat_stmt_end(parser)) return NULL;
   return stmt;
 }
 
 AST *parse_expr_stmt(Arena *pa, AST *parent, Parser *parser){
   AST *expr = parse_expression(pa, parent, parser);
   if(expr == NULL) return NULL;
-  if(parser_eat(TOK_NL, parser) == NULL) return NULL;
+	if(!parser_eat_stmt_end(parser)) return NULL;
   return expr;
 }
 
@@ -1399,9 +1423,10 @@ AST *parse_statement(Arena *pa, AST *parent, Parser *parser){
 
   if(
       (parser->next = save, (stmt = parse_assignment(pa, parent, parser))) ||
+      (parser->next = save, (stmt = parse_return_stmt(pa, parent, parser)))    ||
       (parser->next = save, (stmt = parse_if_stmt(pa, parent, parser)))    ||
       (parser->next = save, (stmt = parse_fn_def(pa, parent, parser)))     ||
-      (parser->next = save, (stmt = parse_expression(pa, parent, parser)))
+      (parser->next = save, (stmt = parse_expr_stmt(pa, parent, parser)))
     ) return stmt;
 
   return NULL;
@@ -1685,8 +1710,8 @@ Value make_num(double num){
 }
 Value make_complex(double complex num){
 	Value v = {
-		.valueType    = VALUE_COMPLEX,
-		.value.number = num
+		.valueType            = VALUE_COMPLEX,
+		.value.complex_number = num
 	};
 	return v;
 }
@@ -1948,7 +1973,7 @@ char *string_from_num(Arena *a, double num){
 
 int modulo(int a, int b){
 	int r = a % b;
-	return a > 0 ? r : r + b;
+	return r < 0 ? r + b : r;
 }
 
 int poly_is_zero(Polynomial *p){
@@ -2050,8 +2075,8 @@ void poly_horner_with_derivative(
     return;
   }
 
-  double val = p.coeffs[p.deg];
-  double der = 0.0;
+  double complex val = p.coeffs[p.deg];
+  double complex der = 0.0;
 
   for (int i = (int)p.deg - 1; i >= 0; i--) {
     der = der * x + val;
@@ -2084,9 +2109,10 @@ void poly_aberth_solve(Arena *ta, Polynomial poly, double complex *roots) {
     // Initial estimates on a circle
     double M = radius + 1.0;
     double pi = acos(-1.0);
+		double offset = 0.1;
 
     for (size_t i = 0; i < deg; i++) {
-        double theta = 2.0 * pi * i / deg;
+        double theta = 2.0 * pi * i / deg + offset;
         roots[i] = M * cexp(I * theta);
     }
 
@@ -2291,35 +2317,54 @@ typedef Value (*BinaryFn)(Arena *a, Value *left, Value *right);
 Value op_with_nan(Arena *a, Value *left, Value *right){
 	return make_nan();
 }
-Value add_num_num(Arena *a, Value *left, Value *right){
+
+
+double complex as_complex(Value *v){
+	return v->valueType == VALUE_COMPLEX ? v->value.complex_number : v->value.number;
+}
+
+Value add_scalar_scalar(Arena *a, Value *left, Value *right){
+	if(left->valueType == VALUE_NUMBER && right->valueType == VALUE_NUMBER)
 		return make_num(left->value.number + right->value.number);
+	return make_complex(as_complex(left) + as_complex(right));
 }
-Value sub_num_num(Arena *a, Value *left, Value *right){
+Value sub_scalar_scalar(Arena *a, Value *left, Value *right){
+	if(left->valueType == VALUE_NUMBER && right->valueType == VALUE_NUMBER)
 		return make_num(left->value.number - right->value.number);
+	return make_complex(as_complex(left) - as_complex(right));
 }
-Value mul_num_num(Arena *a, Value *left, Value *right){
+Value mul_scalar_scalar(Arena *a, Value *left, Value *right){
+	if(left->valueType == VALUE_NUMBER && right->valueType == VALUE_NUMBER)
 		return make_num(left->value.number * right->value.number);
+	return make_complex(as_complex(left) * as_complex(right));
 }
-Value div_num_num(Arena *a, Value *left, Value *right){
+Value div_scalar_scalar(Arena *a, Value *left, Value *right){
+	if(left->valueType == VALUE_NUMBER && right->valueType == VALUE_NUMBER)
 		return make_num(left->value.number / right->value.number);
+	return make_complex(as_complex(left) / as_complex(right));
 }
-Value pow_num_num(Arena *a, Value *left, Value *right){
-		return make_num(pow(left->value.number, right->value.number));
+Value pow_scalar_scalar(Arena *a, Value *left, Value *right){
+	if(left->valueType == VALUE_NUMBER && right->valueType == VALUE_NUMBER)
+		return make_num(pow(left->value.number , right->value.number));
+	return make_complex(cpow(as_complex(left),  as_complex(right)));
 }
+
+// Real-specific
+
 Value eq_num_num(Arena *a, Value *left, Value *right){
-		return make_num(left->value.number == right->value.number);
+	return make_num(left->value.number == right->value.number);
 }
 Value lt_num_num(Arena *a, Value *left, Value *right){
-		return make_num(left->value.number < right->value.number);
+	return make_num(left->value.number < right->value.number);
 }
 Value gt_num_num(Arena *a, Value *left, Value *right){
-		return make_num(left->value.number > right->value.number);
+	return make_num(left->value.number > right->value.number);
 }
 Value leq_num_num(Arena *a, Value *left, Value *right){
-		return make_num(left->value.number <= right->value.number);
+	return make_num(left->value.number <= right->value.number);
 }
 Value geq_num_num(Arena *a, Value *left, Value *right){
-		return make_num(left->value.number >= right->value.number);
+	return make_num(left->value.number >= right->value.number);
 }
 
 // ------------- Arrays --------------------
@@ -2789,12 +2834,22 @@ Value eq_str_str(Arena *a, Value *left, Value *right){
 
 static const BinaryFn binop_dispatch[OP_TYPE_LIST_COUNT][VALUE_TYPE_COUNT][VALUE_TYPE_COUNT] = {
 	[OP_PLUS] = {
-		[VALUE_NUMBER] = {
-			[VALUE_NUMBER]            = add_num_num,
+		[VALUE_NUMBER]              = {
+			[VALUE_NUMBER]            = add_scalar_scalar,
+			[VALUE_COMPLEX]           = add_scalar_scalar,
 			[VALUE_ARRAY]             = add_num_array,
 			[VALUE_POLYNOMIAL]        = add_num_poly,
 			[VALUE_TRANSFER_FUNCTION] = add_num_tf,
-      [VALUE_STRING]            = cat_num_str,
+			[VALUE_STRING]            = cat_num_str,
+			[VALUE_NAN]               = op_with_nan,
+		},
+		[VALUE_COMPLEX]              = {
+			[VALUE_NUMBER]            = add_scalar_scalar,
+			[VALUE_COMPLEX]           = add_scalar_scalar,
+			[VALUE_ARRAY]             = op_with_nan,
+			[VALUE_POLYNOMIAL]        = op_with_nan,
+			[VALUE_TRANSFER_FUNCTION] = op_with_nan,
+			[VALUE_STRING]            = op_with_nan,
 			[VALUE_NAN]               = op_with_nan,
 		},
 		[VALUE_ARRAY] = {
@@ -2837,7 +2892,7 @@ static const BinaryFn binop_dispatch[OP_TYPE_LIST_COUNT][VALUE_TYPE_COUNT][VALUE
 
 	[OP_MINUS] = {
 		[VALUE_NUMBER] = {
-			[VALUE_NUMBER]            = sub_num_num,
+			[VALUE_NUMBER]            = sub_scalar_scalar,
 			[VALUE_ARRAY]             = sub_num_array,
 			[VALUE_POLYNOMIAL]        = sub_num_poly,
 			[VALUE_TRANSFER_FUNCTION] = sub_num_tf,
@@ -2875,7 +2930,7 @@ static const BinaryFn binop_dispatch[OP_TYPE_LIST_COUNT][VALUE_TYPE_COUNT][VALUE
 
 	[OP_MUL] = {
 		[VALUE_NUMBER] = {
-			[VALUE_NUMBER]            = mul_num_num,
+			[VALUE_NUMBER]            = mul_scalar_scalar,
 			[VALUE_ARRAY]             = mul_num_array,
 			[VALUE_POLYNOMIAL]        = mul_num_poly,
 			[VALUE_TRANSFER_FUNCTION] = mul_num_tf,
@@ -2913,7 +2968,7 @@ static const BinaryFn binop_dispatch[OP_TYPE_LIST_COUNT][VALUE_TYPE_COUNT][VALUE
 
 	[OP_DIV] = {
 		[VALUE_NUMBER] = {
-			[VALUE_NUMBER]            = div_num_num,
+			[VALUE_NUMBER]            = div_scalar_scalar,
 			[VALUE_ARRAY]             = op_with_nan,
       [VALUE_POLYNOMIAL]        = ordered_div_num_poly,
 			[VALUE_TRANSFER_FUNCTION] = div_num_tf,
@@ -2951,7 +3006,7 @@ static const BinaryFn binop_dispatch[OP_TYPE_LIST_COUNT][VALUE_TYPE_COUNT][VALUE
 
 	[OP_POW] = {
 		[VALUE_NUMBER] = {
-			[VALUE_NUMBER]            = pow_num_num,
+			[VALUE_NUMBER]            = pow_scalar_scalar,
 			[VALUE_ARRAY]             = op_with_nan,
 			[VALUE_NAN]               = op_with_nan,
 		},
@@ -3043,7 +3098,17 @@ Value native_import(Arena *a, Environment *e, char* script, size_t argc, Value *
 //------------ Math --------------
 
 Value native_abs(Arena *a, Environment *e, char* script, size_t argc, Value *argv, int *silent){ 
+	if(argv[0].valueType == VALUE_COMPLEX) return make_num(cabs(argv[0].value.complex_number));
   return make_num(fabs(argv[0].value.number));
+}
+Value native_real(Arena *a, Environment *e, char* script, size_t argc, Value *argv, int *silent){ 
+  return make_num(creal(argv[0].value.complex_number));
+}
+Value native_imag(Arena *a, Environment *e, char* script, size_t argc, Value *argv, int *silent){ 
+  return make_num(cimag(argv[0].value.complex_number));
+}
+Value native_arg(Arena *a, Environment *e, char* script, size_t argc, Value *argv, int *silent){ 
+  return make_num(carg(argv[0].value.complex_number));
 }
 Value native_log(Arena *a, Environment *e, char* script, size_t argc, Value *argv, int *silent){ 
   return make_num(log(argv[0].value.number));
@@ -3133,6 +3198,9 @@ static const NativeValueDispatch native_fns[] = {
   native_import,
   // Math
   native_abs,
+  native_real,
+  native_imag,
+  native_arg,
   native_log,
   native_exp,
   native_sin,
@@ -3154,6 +3222,9 @@ static const char *native_fn_names[] = {
   "import",
   // Math
   "abs",
+  "real",
+  "imag",
+  "arg",
   "log",
   "exp",
   "sin",
@@ -3174,6 +3245,9 @@ static const size_t native_fn_argc[] = {
   1,
   1,
   // Math
+  1,
+  1,
+  1,
   1,
   1,
   1,
@@ -3204,9 +3278,17 @@ Value resolve_variable(Arena *a, Environment *e, Value *literal){
 		return *var->value;
 }
 
-int eval_stmt(Arena* ta, AST *ast, Environment *e, char *script_path, AST *stmt);
+// Evaluation
+
+typedef enum {
+	EXEC_OK,
+	EXEC_ERROR,
+	EXEC_RETURN,
+} ExecStatus;
+
+ExecStatus eval_stmt(Arena* ta, AST *ast, Environment *e, char *script_path, AST *stmt, Value *result_out);
 Value eval_expr(Arena *a, Environment *e, char *script_path, AST *expr, int *silent);
-int eval_block( Arena *a, AST *ast, Environment *e, char *script_path, AST *first, Value *result_out);
+ExecStatus eval_block( Arena *a, AST *ast, Environment *e, char *script_path, AST *first, Value *result_out);
 
 Value eval_unop(Arena *a, Environment *e, AST *op, Value *arg_given){
 	Value *arg  = arg_given;
@@ -3374,10 +3456,10 @@ Value eval_function(Arena *ta, Environment *e, AST *fn_call, char *script_path, 
 	}
 
 	Value result;
-  AST *block    = fun->value.fun.definition->as.fn_def.block;
-  int out       = eval_block(ta, fn_call, new_env, script_path, block, &result);
+  AST *block     = fun->value.fun.definition->as.fn_def.block;
+  ExecStatus out = eval_block(ta, fn_call, new_env, script_path, block, &result);
 
-  if(out != 0){
+  if(out == EXEC_ERROR){
     arena_restore(e->frame, scratch);
     return make_nan();
   }
@@ -3398,6 +3480,11 @@ void print_value(Arena *ta, Environment *e, Value *value){
 				}else{
 					print_value(ta, e, &resolved);
 				}
+				break;
+			}
+		case VALUE_NAN:
+			{
+				printf("nan\n");
 				break;
 			}
 		case VALUE_NUMBER:
@@ -3781,7 +3868,7 @@ Value eval_expr(Arena *ta, Environment *e, char *script_path, AST *expr, int *si
 	return value;
 }
 
-int eval_block(
+ExecStatus eval_block(
     Arena *ta,
     AST *ast,
     Environment *e,
@@ -3797,7 +3884,7 @@ int eval_block(
             int silent = 1;
             result = eval_expr( ta, e, script_path, stmt, &silent);
         } else {
-            int err = eval_stmt(ta, ast, e, script_path, stmt);
+            int err = eval_stmt(ta, ast, e, script_path, stmt, result_out);
             if (err != 0) return err;
 
             result = make_num(0);
@@ -3810,7 +3897,14 @@ int eval_block(
     return 0;
 }
 
-int eval_stmt(Arena* ta, AST *ast, Environment *e, char *script_path, AST *stmt){
+ExecStatus eval_stmt(
+		Arena* ta,
+		AST *ast,
+		Environment *e,
+		char *script_path,
+		AST *stmt,
+		Value *result_out
+		){
   int silent = 0;
 
 	if(stmt->statement_type == STATEMENT_EXPR){
@@ -3895,11 +3989,17 @@ int eval_stmt(Arena* ta, AST *ast, Environment *e, char *script_path, AST *stmt)
       return 0;
 
     if (!cond_true && stmt->as.if_stmt.else_is_elif) {
-      return eval_stmt(ta, ast, e, script_path, branch);
+      return eval_stmt(ta, ast, e, script_path, branch, result_out);
     }
 
-    Value result;
-    return eval_block(ta, ast, e, script_path, branch, &result);
+    return eval_block(ta, ast, e, script_path, branch, result_out);
+  }
+
+  if(stmt->statement_type == STATEMENT_RETURN){
+		if(!result_out) return EXEC_RETURN;
+		if(!stmt->as.statement.expr){ *result_out = make_num(0); return EXEC_RETURN; }
+		*result_out = eval_expr(ta, e, script_path, stmt->as.statement.expr, &silent);
+		return EXEC_RETURN;
   }
 
 	return 0;
@@ -3910,8 +4010,11 @@ int run_ast(Arena* ta, AST *ast, Environment *e, char *script_path){
 	AST *stmt = ast->as.program.statements_list;
 
 	while(stmt != NULL){
-		int status = eval_stmt(ta, ast, e, script_path, stmt);
-		if(status != 0) return status;
+		ExecStatus status = eval_stmt(ta, ast, e, script_path, stmt, NULL);
+		if(status == EXEC_RETURN){
+			printf("Return outside function body\n");
+		}
+		if(status != EXEC_OK) return status;
 		stmt = stmt->next;
 	}
 
